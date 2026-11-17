@@ -317,6 +317,34 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 			},
 			expectedError: "source",
 		},
+		{
+			name: "object_path with absolute path",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"object_path": "testdata/synthetic/empty.xdr"`, `"object_path": "/var/data/ledger.xdr"`, 1)
+			},
+			expectedError: "object_path",
+		},
+		{
+			name: "object_path with parent directory traversal",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"object_path": "testdata/synthetic/empty.xdr"`, `"object_path": "testdata/../secret.xdr"`, 1)
+			},
+			expectedError: "object_path",
+		},
+		{
+			name: "object_path with windows backslash",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"object_path": "testdata/synthetic/empty.xdr"`, `"object_path": "testdata\\synthetic\\empty.xdr"`, 1)
+			},
+			expectedError: "object_path",
+		},
+		{
+			name: "object_path with double slashes",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"object_path": "testdata/synthetic/empty.xdr"`, `"object_path": "testdata//empty.xdr"`, 1)
+			},
+			expectedError: "object_path",
+		},
 	}
 
 	for _, tc := range tests {
@@ -408,4 +436,47 @@ func TestValidateManifestBytes_DeterministicErrorOrdering(t *testing.T) {
 			t.Errorf("errors not sorted by Path: index %d (%s) > index %d (%s)", i-1, prev.Path, i, curr.Path)
 		}
 	}
+}
+
+func TestValidateManifestBytes_StrictSingleDocument(t *testing.T) {
+	t.Run("trailing second JSON document is rejected", func(t *testing.T) {
+		multiDoc := validSyntheticFixtureJSON + `{"extra_document": true}`
+		_, _, err := corpus.ValidateManifestBytes([]byte(multiDoc))
+		if err == nil {
+			t.Fatalf("expected error for trailing JSON document, got nil")
+		}
+		if !strings.Contains(err.Error(), "trailing data") {
+			t.Errorf("expected error to mention trailing data, got: %v", err)
+		}
+	})
+
+	t.Run("trailing non-whitespace garbage is rejected", func(t *testing.T) {
+		garbageDoc := validSyntheticFixtureJSON + ` random_trailing_garbage_text`
+		_, _, err := corpus.ValidateManifestBytes([]byte(garbageDoc))
+		if err == nil {
+			t.Fatalf("expected error for trailing garbage, got nil")
+		}
+		if !strings.Contains(err.Error(), "trailing data") {
+			t.Errorf("expected error to mention trailing data, got: %v", err)
+		}
+	})
+
+	t.Run("truncated JSON document is rejected", func(t *testing.T) {
+		truncatedDoc := `{"schema_version": "1.0.0", "case_id": "case_incomplete"`
+		_, _, err := corpus.ValidateManifestBytes([]byte(truncatedDoc))
+		if err == nil {
+			t.Fatalf("expected error for truncated JSON document, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid manifest JSON") {
+			t.Errorf("expected error to mention invalid manifest JSON, got: %v", err)
+		}
+	})
+
+	t.Run("valid document with trailing whitespace succeeds", func(t *testing.T) {
+		whitespaceDoc := validSyntheticFixtureJSON + "   \n\t\r\n  "
+		_, _, err := corpus.ValidateManifestBytes([]byte(whitespaceDoc))
+		if err != nil {
+			t.Fatalf("expected document with trailing whitespace to succeed, got: %v", err)
+		}
+	})
 }

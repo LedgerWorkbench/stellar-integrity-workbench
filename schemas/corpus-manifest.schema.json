@@ -144,8 +144,9 @@
         },
         "object_path": {
           "type": "string",
-          "description": "Relative or content-addressed path to the input object.",
-          "minLength": 1
+          "description": "Relative or content-addressed path to the input object. Must be a safe, canonical relative path without directory traversal.",
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"
         }
       }
     },

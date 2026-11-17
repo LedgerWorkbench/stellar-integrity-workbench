@@ -102,6 +102,10 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 	limitations := make([]string, len(m.Limitations))
 	copy(limitations, m.Limitations)
 
+	if err := ValidateObjectPath(m.Input.ObjectPath); err != nil {
+		return nil, fmt.Errorf("invalid input.object_path: %w", err)
+	}
+
 	return &domain.Case{
 		SchemaVersion:  m.SchemaVersion,
 		CaseID:         m.CaseID,

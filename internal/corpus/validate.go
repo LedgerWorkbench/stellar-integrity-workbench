@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -83,10 +84,19 @@ func ValidateManifestBytes(data []byte) (*domain.Case, *Manifest, error) {
 		return nil, nil, fmt.Errorf("schema compiler error: %w", err)
 	}
 
-	// 1. Unmarshal into generic value without losing number precision
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
-	if err != nil {
+	// 1. Verify single complete JSON document and decode generic document without losing number precision
+	docDecoder := json.NewDecoder(bytes.NewReader(data))
+	docDecoder.UseNumber()
+
+	var doc any
+	if err := docDecoder.Decode(&doc); err != nil {
 		return nil, nil, fmt.Errorf("invalid manifest JSON: %w", err)
+	}
+
+	// Reject trailing second JSON document or trailing non-whitespace data
+	var trailing any
+	if err := docDecoder.Decode(&trailing); err != io.EOF {
+		return nil, nil, fmt.Errorf("invalid manifest JSON: expected exactly one JSON document, found trailing data")
 	}
 
 	// 2. Validate against Draft 2020-12 JSON Schema
@@ -96,6 +106,7 @@ func ValidateManifestBytes(data []byte) (*domain.Case, *Manifest, error) {
 
 	// 3. Deserialize with unknown field rejection
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 
 	var manifest Manifest
@@ -103,12 +114,21 @@ func ValidateManifestBytes(data []byte) (*domain.Case, *Manifest, error) {
 		return nil, nil, fmt.Errorf("deserialization error: %w", err)
 	}
 
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, nil, fmt.Errorf("deserialization error: expected exactly one JSON document, found trailing data")
+	}
+
 	// 4. Validate major schema version
 	if !strings.HasPrefix(manifest.SchemaVersion, "1.") {
 		return nil, nil, fmt.Errorf("unsupported major schema version %q; only 1.x.y is supported", manifest.SchemaVersion)
 	}
 
-	// 5. Convert to domain case
+	// 5. Validate object path safety
+	if err := ValidateObjectPath(manifest.Input.ObjectPath); err != nil {
+		return nil, nil, fmt.Errorf("invalid input.object_path: %w", err)
+	}
+
+	// 6. Convert to domain case
 	domainCase, err := manifest.ToDomain()
 	if err != nil {
 		return nil, nil, fmt.Errorf("manifest to domain conversion error: %w", err)
