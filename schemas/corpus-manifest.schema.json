@@ -464,9 +464,9 @@
           "network": {
             "properties": {
               "name": {
-                "pattern": "(?i).*(synthetic|standalone).*",
+                "pattern": ".*([sS][yY][nN][tT][hH][eE][tT][iI][cC]|[sS][tT][aA][nN][dD][aA][lL][oO][nN][eE]).*",
                 "not": {
-                  "pattern": "(?i).*(mainnet|testnet|futurenet|public global stellar network).*"
+                  "pattern": ".*([mM][aA][iI][nN][nN][eE][tT]|[tT][eE][sS][tT][nN][eE][tT]|[fF][uU][tT][uU][rR][eE][nN][eE][tT]|[pP][uU][bB][lL][iI][cC] +[gG][lL][oO][bB][aA][lL] +[sS][tT][eE][lL][lL][aA][rR] +[nN][eE][tT][wW][oO][rR][kK]).*"
                 }
               }
             }

@@ -1,11 +1,16 @@
 package corpus_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/corpus"
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/schemas"
 )
 
 func TestValidateObjectPath(t *testing.T) {
@@ -66,9 +71,53 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+func compileCorpusManifestSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemas.CorpusManifestSchemaJSON))
+	if err != nil {
+		t.Fatalf("failed to unmarshal embedded schema JSON: %v", err)
+	}
+
+	if err := compiler.AddResource("corpus-manifest.schema.json", doc); err != nil {
+		t.Fatalf("failed to add schema resource: %v", err)
+	}
+
+	schema, err := compiler.Compile("corpus-manifest.schema.json")
+	if err != nil {
+		t.Fatalf("failed to compile schema: %v", err)
+	}
+
+	return schema
+}
+
+// TestCorpusManifestSchema_Draft2020MetaSchema validates that the embedded corpus manifest
+// schema conforms strictly to the JSON Schema Draft 2020-12 meta-schema.
+func TestCorpusManifestSchema_Draft2020MetaSchema(t *testing.T) {
+	compiler := jsonschema.NewCompiler()
+	metaSchema, err := compiler.Compile("https://json-schema.org/draft/2020-12/schema")
+	if err != nil {
+		t.Fatalf("failed to compile Draft 2020-12 meta-schema: %v", err)
+	}
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemas.CorpusManifestSchemaJSON))
+	if err != nil {
+		t.Fatalf("failed to unmarshal corpus manifest schema: %v", err)
+	}
+
+	if err := metaSchema.Validate(doc); err != nil {
+		t.Fatalf("corpus manifest schema failed Draft 2020-12 meta-schema validation: %v", err)
+	}
+}
+
 // TestValidateObjectPath_SchemaAndGoParity verifies that the JSON Schema object_path
-// pattern and the Go ValidateObjectPath function reach identical validation decisions.
+// pattern and the Go ValidateObjectPath function reach identical validation decisions
+// by evaluating both validation routes independently (without calling ValidateManifestBytes).
 func TestValidateObjectPath_SchemaAndGoParity(t *testing.T) {
+	schema := compileCorpusManifestSchema(t)
+
 	testMatrix := []struct {
 		path      string
 		wantValid bool
@@ -107,7 +156,7 @@ func TestValidateObjectPath_SchemaAndGoParity(t *testing.T) {
 
 	for _, tc := range testMatrix {
 		t.Run(fmt.Sprintf("parity_%s", tc.path), func(t *testing.T) {
-			// 1. Check Go validation
+			// 1. Check Go validation independently
 			goErr := corpus.ValidateObjectPath(tc.path)
 			goValid := goErr == nil
 
@@ -115,7 +164,12 @@ func TestValidateObjectPath_SchemaAndGoParity(t *testing.T) {
 				t.Errorf("Go ValidateObjectPath(%q): got valid=%v, want valid=%v (err=%v)", tc.path, goValid, tc.wantValid, goErr)
 			}
 
-			// 2. Check JSON Schema validation via ValidateManifestBytes
+			// 2. Check compiled JSON Schema validation independently (do not call ValidateManifestBytes)
+			pathJSON, err := json.Marshal(tc.path)
+			if err != nil {
+				t.Fatalf("failed to marshal path %q: %v", tc.path, err)
+			}
+
 			manifestJSON := fmt.Sprintf(`{
   "schema_version": "1.0.0",
   "case_id": "case_parity_test",
@@ -136,7 +190,7 @@ func TestValidateObjectPath_SchemaAndGoParity(t *testing.T) {
     "encoding": "xdr_binary",
     "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "byte_length": 0,
-    "object_path": %q
+    "object_path": %s
   },
   "expectations": [
     {
@@ -152,18 +206,256 @@ func TestValidateObjectPath_SchemaAndGoParity(t *testing.T) {
     "indexer_version": null
   },
   "limitations": []
-}`, tc.path)
+}`, string(pathJSON))
 
-			_, _, schemaErr := corpus.ValidateManifestBytes([]byte(manifestJSON))
+			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(manifestJSON))
+			if err != nil {
+				t.Fatalf("failed to unmarshal test manifest JSON: %v", err)
+			}
+			schemaErr := schema.Validate(doc)
 			schemaValid := schemaErr == nil
 
 			if schemaValid != tc.wantValid {
-				t.Errorf("Schema ValidateManifestBytes with path %q: got valid=%v, want valid=%v (err=%v)", tc.path, schemaValid, tc.wantValid, schemaErr)
+				t.Errorf("Direct Schema Validate with path %q: got valid=%v, want valid=%v (err=%v)", tc.path, schemaValid, tc.wantValid, schemaErr)
 			}
 
 			// 3. Confirm exact agreement
 			if goValid != schemaValid {
 				t.Fatalf("DISAGREEMENT between Go (%v) and Schema (%v) for path %q", goValid, schemaValid, tc.path)
+			}
+		})
+	}
+}
+
+// TestSyntheticNetworkName_DirectSchemaValidation tests the synthetic network naming
+// policy directly against the compiled JSON Schema without calling Go validation helpers.
+func TestSyntheticNetworkName_DirectSchemaValidation(t *testing.T) {
+	schema := compileCorpusManifestSchema(t)
+
+	// Valid cases: synthetic fixtures that positively identify as synthetic or standalone
+	validSyntheticNames := []string{
+		"Synthetic Standalone Network",
+		"synthetic test network",
+		"Standalone Test Cluster",
+		"Local Synthetic Sandbox",
+		"SYNTHETIC",
+		"standalone",
+		"My-Synthetic-Core-Node",
+		"standalone_sandbox_env",
+	}
+
+	for _, name := range validSyntheticNames {
+		t.Run("valid_synthetic_"+name, func(t *testing.T) {
+			manifestJSON := fmt.Sprintf(`{
+  "schema_version": "1.0.0",
+  "case_id": "case_schema_synthetic_test",
+  "title": "Synthetic Network Schema Test",
+  "summary": "Tests schema validation of synthetic network names",
+  "classification": "synthetic_fixture",
+  "source": {
+    "kind": "synthetic_construction",
+    "notes": "Testing synthetic network name schema validation"
+  },
+  "network": {
+    "name": %q,
+    "protocol_version": 21,
+    "ledger_sequence": 100
+  },
+  "input": {
+    "format": "LedgerCloseMeta",
+    "encoding": "xdr_binary",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "byte_length": 0,
+    "object_path": "fixtures/test.xdr"
+  },
+  "expectations": [
+    {
+      "assertion_id": "assertion_01",
+      "kind": "ledger_sequence_equals",
+      "expected": 100,
+      "description": "desc"
+    }
+  ],
+  "implementation_context": {
+    "stellar_core_version": null,
+    "sdk_versions": {},
+    "indexer_version": null
+  },
+  "limitations": []
+}`, name)
+
+			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(manifestJSON))
+			if err != nil {
+				t.Fatalf("failed to unmarshal JSON: %v", err)
+			}
+			if err := schema.Validate(doc); err != nil {
+				t.Errorf("expected synthetic network name %q to pass schema validation, got error: %v", name, err)
+			}
+		})
+	}
+
+	// Invalid cases: synthetic fixtures with forbidden or missing naming
+	invalidSyntheticNames := []struct {
+		name   string
+		reason string
+	}{
+		{"Mainnet", "forbidden mainnet"},
+		{"Stellar Mainnet", "forbidden mainnet"},
+		{"Public Global Stellar Network", "forbidden public network"},
+		{"public  global  stellar  network", "forbidden public network"},
+		{"Testnet", "forbidden testnet"},
+		{"Stellar Testnet", "forbidden testnet"},
+		{"Futurenet", "forbidden futurenet"},
+		{"Stellar Futurenet", "forbidden futurenet"},
+		{"Synthetic Mainnet", "forbidden mainnet in synthetic name"},
+		{"Standalone Testnet", "forbidden testnet in standalone name"},
+		{"Custom Private Network", "lacks synthetic or standalone identifier"},
+		{"Stellar Local Core", "lacks synthetic or standalone identifier"},
+		{"Local Devnet", "lacks synthetic or standalone identifier"},
+	}
+
+	for _, tc := range invalidSyntheticNames {
+		t.Run("invalid_synthetic_"+tc.name, func(t *testing.T) {
+			manifestJSON := fmt.Sprintf(`{
+  "schema_version": "1.0.0",
+  "case_id": "case_schema_synthetic_test",
+  "title": "Synthetic Network Schema Test",
+  "summary": "Tests schema rejection of misleading synthetic network names",
+  "classification": "synthetic_fixture",
+  "source": {
+    "kind": "synthetic_construction",
+    "notes": "Testing synthetic network name schema validation"
+  },
+  "network": {
+    "name": %q,
+    "protocol_version": 21,
+    "ledger_sequence": 100
+  },
+  "input": {
+    "format": "LedgerCloseMeta",
+    "encoding": "xdr_binary",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "byte_length": 0,
+    "object_path": "fixtures/test.xdr"
+  },
+  "expectations": [
+    {
+      "assertion_id": "assertion_01",
+      "kind": "ledger_sequence_equals",
+      "expected": 100,
+      "description": "desc"
+    }
+  ],
+  "implementation_context": {
+    "stellar_core_version": null,
+    "sdk_versions": {},
+    "indexer_version": null
+  },
+  "limitations": []
+}`, tc.name)
+
+			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(manifestJSON))
+			if err != nil {
+				t.Fatalf("failed to unmarshal JSON: %v", err)
+			}
+			if err := schema.Validate(doc); err == nil {
+				t.Errorf("expected synthetic network name %q (%s) to be rejected by schema, but validation passed", tc.name, tc.reason)
+			}
+		})
+	}
+
+	// Exemption verification: historical_regression and reproduced_regression MUST NOT be rejected
+	// when using public or shared networks like "Public Global Stellar Network" or "Testnet".
+	exemptCases := []struct {
+		name           string
+		classification string
+		networkName    string
+		sourceKind     string
+		extraFields    string
+	}{
+		{
+			name:           "historical_regression_with_public_network",
+			classification: "historical_regression",
+			networkName:    "Public Global Stellar Network",
+			sourceKind:     "upstream_issue",
+			extraFields:    `"url": "https://github.com/stellar/stellar-core/issues/123",`,
+		},
+		{
+			name:           "historical_regression_with_testnet",
+			classification: "historical_regression",
+			networkName:    "Stellar Testnet",
+			sourceKind:     "upstream_issue",
+			extraFields:    `"url": "https://github.com/stellar/stellar-core/issues/123",`,
+		},
+		{
+			name:           "reproduced_regression_with_public_network",
+			classification: "reproduced_regression",
+			networkName:    "Public Global Stellar Network",
+			sourceKind:     "upstream_issue",
+			extraFields:    `"url": "https://github.com/stellar/stellar-core/issues/123",`,
+		},
+	}
+
+	for _, tc := range exemptCases {
+		t.Run("exempt_"+tc.name, func(t *testing.T) {
+			reproductionSection := ""
+			if tc.classification == "reproduced_regression" {
+				reproductionSection = `,
+  "reproduction": {
+    "affected_implementation": {"name": "stellar-core", "version": "v20.0.0"},
+    "fixed_implementation": {"name": "stellar-core", "version": "v20.1.0"},
+    "differential_evidence": {
+      "evidence_ref": "evidence/runs/mock_diff.json",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }`
+			}
+
+			manifestJSON := fmt.Sprintf(`{
+  "schema_version": "1.0.0",
+  "case_id": "case_exempt_network_test",
+  "title": "Exempt Network Test",
+  "summary": "Verifies historical/reproduced regressions are exempt from synthetic naming policy",
+  "classification": %q,
+  "source": {
+    "kind": %q,
+    %s
+    "notes": "Testing exemption"
+  },
+  "network": {
+    "name": %q,
+    "protocol_version": 20,
+    "ledger_sequence": 123456
+  },
+  "input": {
+    "format": "LedgerCloseMeta",
+    "encoding": "xdr_binary",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "byte_length": 100,
+    "object_path": "fixtures/test.xdr"
+  },
+  "expectations": [
+    {
+      "assertion_id": "assertion_01",
+      "kind": "ledger_sequence_equals",
+      "expected": 123456,
+      "description": "desc"
+    }
+  ],
+  "implementation_context": {
+    "stellar_core_version": null,
+    "sdk_versions": {},
+    "indexer_version": null
+  },
+  "limitations": []%s
+}`, tc.classification, tc.sourceKind, tc.extraFields, tc.networkName, reproductionSection)
+
+			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(manifestJSON))
+			if err != nil {
+				t.Fatalf("failed to unmarshal JSON: %v", err)
+			}
+			if err := schema.Validate(doc); err != nil {
+				t.Errorf("expected %s with network %q to pass schema validation (exempt from synthetic naming rules), got error: %v", tc.classification, tc.networkName, err)
 			}
 		})
 	}
