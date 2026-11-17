@@ -2,7 +2,10 @@ module github.com/LedgerWorkbench/stellar-integrity-workbench
 
 go 1.25.0
 
-require github.com/stellar/go-stellar-sdk v0.9.0
+require (
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/stellar/go-stellar-sdk v0.9.0
+)
 
 require (
 	cel.dev/expr v0.25.2 // indirect

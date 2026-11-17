@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LedgerWorkbench/stellar-integrity-workbench/schemas/corpus-manifest.schema.json",
+  "title": "CorpusManifest",
+  "description": "Corpus manifest schema v1.0.0 for Stellar Integrity Workbench conformance and regression cases.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "case_id",
+    "title",
+    "summary",
+    "classification",
+    "source",
+    "network",
+    "input",
+    "expectations",
+    "implementation_context",
+    "limitations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of the manifest schema. Must match major version 1.",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "case_id": {
+      "type": "string",
+      "description": "Stable unique identifier for the corpus case, prefixed with case_.",
+      "pattern": "^case_[a-z0-9_\\-]+$",
+      "minLength": 6,
+      "maxLength": 128
+    },
+    "title": {
+      "type": "string",
+      "description": "Short descriptive title of the case.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "summary": {
+      "type": "string",
+      "description": "Factual description of the case and its provenance.",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "classification": {
+      "type": "string",
+      "description": "Evidence classification of the corpus case.",
+      "enum": [
+        "verified_ledger_sample",
+        "historical_regression",
+        "reproduced_regression",
+        "synthetic_fixture",
+        "unverified"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "description": "Provenance information describing the origin of the sample.",
+      "required": ["kind", "notes"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "galexie_archive",
+            "captive_core",
+            "rpc_endpoint",
+            "upstream_issue",
+            "upstream_pr",
+            "synthetic_construction",
+            "unverified_submission",
+            "other"
+          ]
+        },
+        "url": {
+          "type": ["string", "null"],
+          "format": "uri"
+        },
+        "repository": {
+          "type": ["string", "null"]
+        },
+        "issue_number": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "pull_request_number": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "retrieved_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "description": "Stellar network context and ledger identifiers.",
+      "required": ["name", "protocol_version", "ledger_sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocol_version": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "ledger_sequence": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "description": "Immutable input object metadata and integrity hashes.",
+      "required": ["format", "encoding", "sha256", "byte_length", "object_path"],
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["LedgerCloseMeta"]
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["xdr_binary", "xdr_base64"]
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Exact SHA-256 hash of the original input bytes (64 lowercase hex characters).",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "description": "Exact byte length of the input object.",
+          "minimum": 0
+        },
+        "object_path": {
+          "type": "string",
+          "description": "Relative or content-addressed path to the input object.",
+          "minLength": 1
+        }
+      }
+    },
+    "expectations": {
+      "type": "array",
+      "description": "Declarative assertions to evaluate during replay.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["assertion_id", "kind", "expected", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "assertion_id": {
+            "type": "string",
+            "pattern": "^assertion_[a-z0-9_\\-]+$",
+            "minLength": 11,
+            "maxLength": 128
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ledger_sequence_equals",
+              "transaction_count_equals",
+              "transaction_hash_present",
+              "decoded_type_equals",
+              "input_hash_equals"
+            ]
+          },
+          "expected": {},
+          "description": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "kind": { "const": "ledger_sequence_equals" } }
+            },
+            "then": {
+              "properties": {
+                "expected": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "const": "transaction_count_equals" } }
+            },
+            "then": {
+              "properties": {
+                "expected": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "const": "transaction_hash_present" } }
+            },
+            "then": {
+              "properties": {
+                "expected": {
+                  "type": "string",
+                  "pattern": "^[0-9a-fA-F]{64}$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "const": "decoded_type_equals" } }
+            },
+            "then": {
+              "properties": {
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "const": "input_hash_equals" } }
+            },
+            "then": {
+              "properties": {
+                "expected": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "implementation_context": {
+      "type": "object",
+      "description": "Contextual versions of software associated with this case.",
+      "required": ["stellar_core_version", "sdk_versions", "indexer_version"],
+      "additionalProperties": false,
+      "properties": {
+        "stellar_core_version": {
+          "type": ["string", "null"]
+        },
+        "sdk_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "indexer_version": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "description": "Known limitations or assumptions for this case.",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "classification": { "const": "verified_ledger_sample" }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "required": ["kind", "url", "retrieved_at", "notes"],
+            "properties": {
+              "kind": {
+                "enum": ["galexie_archive", "captive_core", "rpc_endpoint"]
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "retrieved_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "network": {
+            "properties": {
+              "protocol_version": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "ledger_sequence": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "classification": { "const": "historical_regression" }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "required": ["url"],
+                "properties": {
+                  "url": { "type": "string", "format": "uri" }
+                }
+              },
+              {
+                "required": ["repository", "issue_number"],
+                "properties": {
+                  "issue_number": { "type": "integer", "minimum": 1 }
+                }
+              },
+              {
+                "required": ["repository", "pull_request_number"],
+                "properties": {
+                  "pull_request_number": { "type": "integer", "minimum": 1 }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "classification": { "const": "reproduced_regression" }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "required": ["url"],
+                "properties": {
+                  "url": { "type": "string", "format": "uri" }
+                }
+              },
+              {
+                "required": ["repository", "issue_number"],
+                "properties": {
+                  "issue_number": { "type": "integer", "minimum": 1 }
+                }
+              },
+              {
+                "required": ["repository", "pull_request_number"],
+                "properties": {
+                  "pull_request_number": { "type": "integer", "minimum": 1 }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
