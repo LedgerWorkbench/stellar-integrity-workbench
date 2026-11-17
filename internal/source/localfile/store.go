@@ -17,13 +17,12 @@ import (
 
 const (
 	// DefaultMaxBytes is 64 MiB (67,108,864 bytes).
-	// Rationale: 64 MiB serves as a configurable per-input safety ceiling that bounds
-	// the amount of data read and retained in memory for a single corpus input object.
-	// It accommodates large historical ledger-close metadata envelopes (including
-	// LedgerCloseMeta v1 across Protocol 20–22) while protecting worker processes against
-	// unconstrained memory exhaustion from oversized or hostile input files.
-	// Note: This per-input limit does not represent a global worker memory budget;
-	// concurrent replay processing requires a separate aggregate memory and concurrency policy.
+	// The 64 MiB default is an initial operational safety limit selected to bound
+	// individual input loading and memory consumption. It is not a protocol-derived
+	// maximum, and it is not based on measured maximum sizes across historical
+	// Stellar ledger-close metadata. Larger inputs require an explicit, reviewed
+	// configuration change and remain subject to aggregate worker memory and
+	// concurrency controls.
 	DefaultMaxBytes int64 = 64 * 1024 * 1024
 
 	// MaxAllowedBytes is the maximum platform-safe configuration limit for input sizes.

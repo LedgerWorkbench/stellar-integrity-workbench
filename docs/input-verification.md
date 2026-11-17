@@ -67,8 +67,7 @@ Unbounded input reads present a denial-of-service vector and are prohibited. Fil
 2. **Bounded Streaming Read:** File contents are read using `io.LimitReader` bounded to `MaxBytes + 1`. If more than `MaxBytes` are read, the file grew after its initial stat, and it is rejected immediately with `ErrFileTooLarge`.
 3. **Configurable Default Maximum (64 MiB):**
    - The default limit is `64 MiB` (`DefaultMaxBytes = 67,108,864` bytes).
-   - **Rationale:** 64 MiB serves as a configurable per-input safety ceiling that bounds the amount of data read and retained in memory for a single corpus input object. It accommodates large historical ledger-close metadata envelopes (including `LedgerCloseMeta` v1 across Protocol 20–22) while protecting worker processes against unconstrained memory exhaustion from oversized or hostile input files.
-   - **Worker Memory Budget Notice:** Crucially, this per-input ceiling does not represent a global worker memory budget; concurrent replay workloads require separate aggregate memory allocation, pooling, and concurrency throttling policies at the engine worker level.
+   - **Rationale:** The 64 MiB default is an initial operational safety limit selected to bound individual input loading and memory consumption. It is not a protocol-derived maximum, and it is not based on measured maximum sizes across historical Stellar ledger-close metadata. Larger inputs require an explicit, reviewed configuration change and remain subject to aggregate worker memory and concurrency controls.
    - **Validation & Platform Bounds:** Configured limits are validated against platform-safe integer bounds: `MaxAllowedBytes = int64(int(^uint(0)>>1) - 1)`. Non-positive values (zero or negative) and values exceeding `MaxAllowedBytes` are strictly rejected on Store initialization with `ErrInvalidConfig`. The limit cannot be silently disabled or overflowed.
 
 ---

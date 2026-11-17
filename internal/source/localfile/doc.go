@@ -66,15 +66,12 @@
 //     initial stat, and it is rejected immediately.
 //
 // The default maximum file size is 64 MiB (DefaultMaxBytes = 67,108,864 bytes).
-// Rationale: 64 MiB serves as a configurable per-input safety ceiling that bounds
-// the amount of data read and retained in memory for a single corpus input object.
-// It accommodates large historical ledger-close metadata envelopes (including
-// LedgerCloseMeta v1 across Protocol 20–22) while protecting worker processes against
-// unconstrained memory exhaustion from oversized or hostile input files.
-//
-// Crucially, this per-input limit does not represent a global worker memory budget;
-// concurrent replay workloads require separate aggregate memory allocation, pooling,
-// and concurrency throttling policies at the engine worker level.
+// The 64 MiB default is an initial operational safety limit selected to bound
+// individual input loading and memory consumption. It is not a protocol-derived
+// maximum, and it is not based on measured maximum sizes across historical
+// Stellar ledger-close metadata. Larger inputs require an explicit, reviewed
+// configuration change and remain subject to aggregate worker memory and
+// concurrency controls.
 //
 // Invalid size configurations (zero, negative limits, or values exceeding platform-safe
 // integer bounds MaxAllowedBytes) are rejected during Store initialization with ErrInvalidConfig.
