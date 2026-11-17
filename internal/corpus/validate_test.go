@@ -495,6 +495,55 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 			},
 			expectedError: "name",
 		},
+		{
+			name: "synthetic_fixture claiming Mainnet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Mainnet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture claiming Stellar Mainnet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Stellar Mainnet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture claiming Testnet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Testnet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture claiming Stellar Testnet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Stellar Testnet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture claiming Futurenet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Futurenet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture claiming Stellar Futurenet",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Stellar Futurenet"`, 1)
+			},
+			expectedError: "name",
+		},
+		{
+			name: "synthetic_fixture without synthetic or standalone in name",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Custom Private Network"`, 1)
+			},
+			expectedError: "name",
+		},
 	}
 
 	for _, tc := range tests {

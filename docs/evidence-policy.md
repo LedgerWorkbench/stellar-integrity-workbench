@@ -53,8 +53,15 @@ Every corpus case manifest must declare exactly one `classification` from the fo
 - **Mandatory Requirements:**
   - Must declare `source.kind` strictly as `synthetic_construction`.
   - Must describe the construction methodology in `summary` and `source.notes`.
-  - `network.name` must describe a synthetic or standalone test network (e.g. `Synthetic Standalone Network`).
-- **Strict Prohibition:** A synthetic fixture must **never** claim or imply that it was captured from a public Stellar network (`Public Global Stellar Network`, `mainnet`).
+  - `network.name` must positively identify the network as synthetic or standalone (containing `synthetic` or `standalone`, case-insensitive, e.g. `Synthetic Standalone Network`).
+- **Strict Prohibition & Misleading Identity Rejection:** A synthetic fixture must **never** claim, imply, or adopt a shared public, test, or pre-production network identity. The following network names (and any name containing them) are strictly prohibited and rejected by validation:
+  - `Mainnet`
+  - `Stellar Mainnet`
+  - `Public Global Stellar Network`
+  - `Testnet`
+  - `Stellar Testnet`
+  - `Futurenet`
+  - `Stellar Futurenet`
 
 ### 2.5 `unverified`
 - **Definition:** A candidate or submitted input whose provenance, retrieval chain, or expected behaviour is incomplete or still undergoing review.

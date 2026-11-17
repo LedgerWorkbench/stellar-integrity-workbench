@@ -464,15 +464,9 @@
           "network": {
             "properties": {
               "name": {
+                "pattern": "(?i).*(synthetic|standalone).*",
                 "not": {
-                  "enum": [
-                    "Public Global Stellar Network",
-                    "Public Global Stellar Network ; September 2015",
-                    "public",
-                    "mainnet",
-                    "Public",
-                    "Mainnet"
-                  ]
+                  "pattern": "(?i).*(mainnet|testnet|futurenet|public global stellar network).*"
                 }
               }
             }

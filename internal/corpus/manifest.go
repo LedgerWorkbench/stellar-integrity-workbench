@@ -149,8 +149,8 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 		if m.Source.Kind != "synthetic_construction" {
 			return nil, fmt.Errorf("synthetic_fixture must have source.kind 'synthetic_construction', got %q", m.Source.Kind)
 		}
-		if isPublicNetworkName(m.Network.Name) {
-			return nil, fmt.Errorf("synthetic_fixture cannot claim public Stellar network %q", m.Network.Name)
+		if err := ValidateSyntheticNetworkName(m.Network.Name); err != nil {
+			return nil, err
 		}
 	case ClassificationHistoricalRegression:
 		if m.Source.Kind == "synthetic_construction" {
@@ -203,11 +203,32 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 	}, nil
 }
 
-// isPublicNetworkName reports whether a network name claims to be the public Stellar network.
-func isPublicNetworkName(name string) bool {
-	lower := strings.ToLower(strings.TrimSpace(name))
-	return lower == "public global stellar network" ||
-		lower == "public" ||
-		lower == "mainnet" ||
-		strings.HasPrefix(lower, "public global stellar network ;")
+// ValidateSyntheticNetworkName enforces that synthetic fixtures positively identify
+// their network as synthetic or standalone, while rejecting misleading public or test network identities.
+func ValidateSyntheticNetworkName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("synthetic fixture network name must not be empty")
+	}
+	lower := strings.ToLower(trimmed)
+
+	// Check forbidden misleading network identifiers
+	forbidden := []string{
+		"mainnet",
+		"testnet",
+		"futurenet",
+		"public global stellar network",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(lower, f) {
+			return fmt.Errorf("synthetic fixture cannot claim network %q: misleading public or shared network identity", name)
+		}
+	}
+
+	// Must positively identify as synthetic or standalone
+	if !strings.Contains(lower, "synthetic") && !strings.Contains(lower, "standalone") {
+		return fmt.Errorf("synthetic fixture network name %q must positively identify as 'synthetic' or 'standalone'", name)
+	}
+
+	return nil
 }

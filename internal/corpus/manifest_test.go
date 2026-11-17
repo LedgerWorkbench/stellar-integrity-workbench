@@ -31,7 +31,7 @@ func TestManifest_ToDomain(t *testing.T) {
 			Notes:       "Constructed for unit testing",
 		},
 		Network: corpus.Network{
-			Name:            "Test SDF Network",
+			Name:            "Synthetic Standalone Network",
 			ProtocolVersion: &protocolVer,
 			LedgerSequence:  &ledgerSeq,
 		},
@@ -101,7 +101,7 @@ func TestManifest_ToDomain_NilHandling(t *testing.T) {
 			Notes: "No timestamps or URLs",
 		},
 		Network: corpus.Network{
-			Name: "unknown",
+			Name: "Synthetic Standalone Network",
 		},
 		Input: corpus.Input{
 			Format:     "LedgerCloseMeta",
@@ -154,7 +154,7 @@ func TestManifest_ToDomain_InvalidKind(t *testing.T) {
 			Kind:  "synthetic_construction",
 			Notes: "Notes",
 		},
-		Network: corpus.Network{Name: "test"},
+		Network: corpus.Network{Name: "Synthetic Standalone Network"},
 		Input: corpus.Input{
 			Format:     "LedgerCloseMeta",
 			Encoding:   "xdr_binary",
@@ -191,7 +191,7 @@ func TestManifest_DeserializationRejectsUnknownFields(t *testing.T) {
 		"classification": "synthetic_fixture",
 		"unknown_field": "disallowed",
 		"source": {"kind": "synthetic_construction", "notes": "note"},
-		"network": {"name": "test", "protocol_version": null, "ledger_sequence": null},
+		"network": {"name": "Synthetic Standalone Network", "protocol_version": null, "ledger_sequence": null},
 		"input": {
 			"format": "LedgerCloseMeta",
 			"encoding": "xdr_binary",
@@ -215,5 +215,54 @@ func TestManifest_DeserializationRejectsUnknownFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown_field") {
 		t.Errorf("expected error mentioning unknown field, got: %v", err)
+	}
+}
+
+func TestValidateSyntheticNetworkName(t *testing.T) {
+	validNames := []string{
+		"Synthetic Standalone Network",
+		"synthetic test network",
+		"Standalone Test Cluster",
+		"Local Synthetic Sandbox",
+		"SYNTHETIC",
+		"standalone",
+	}
+
+	for _, name := range validNames {
+		t.Run("valid_"+name, func(t *testing.T) {
+			if err := corpus.ValidateSyntheticNetworkName(name); err != nil {
+				t.Errorf("ValidateSyntheticNetworkName(%q) returned unexpected error: %v", name, err)
+			}
+		})
+	}
+
+	invalidNames := []struct {
+		name        string
+		expectedErr string
+	}{
+		{"", "must not be empty"},
+		{"   ", "must not be empty"},
+		{"Mainnet", "misleading public or shared network identity"},
+		{"Stellar Mainnet", "misleading public or shared network identity"},
+		{"Public Global Stellar Network", "misleading public or shared network identity"},
+		{"Testnet", "misleading public or shared network identity"},
+		{"Stellar Testnet", "misleading public or shared network identity"},
+		{"Futurenet", "misleading public or shared network identity"},
+		{"Stellar Futurenet", "misleading public or shared network identity"},
+		{"Synthetic Mainnet", "misleading public or shared network identity"},
+		{"Standalone Testnet", "misleading public or shared network identity"},
+		{"Custom Private Network", "must positively identify as 'synthetic' or 'standalone'"},
+		{"Stellar Local Core", "must positively identify as 'synthetic' or 'standalone'"},
+	}
+
+	for _, tc := range invalidNames {
+		t.Run("invalid_"+tc.name, func(t *testing.T) {
+			err := corpus.ValidateSyntheticNetworkName(tc.name)
+			if err == nil {
+				t.Errorf("ValidateSyntheticNetworkName(%q) expected error containing %q, got nil", tc.name, tc.expectedErr)
+			} else if !strings.Contains(err.Error(), tc.expectedErr) {
+				t.Errorf("ValidateSyntheticNetworkName(%q) expected error containing %q, got %v", tc.name, tc.expectedErr, err)
+			}
+		})
 	}
 }
