@@ -127,6 +127,69 @@ const validHistoricalRegressionJSON = `{
   ]
 }`
 
+// validReproducedRegressionJSON represents a valid reproduced regression manifest with structured reproduction evidence.
+const validReproducedRegressionJSON = `{
+  "schema_version": "1.0.0",
+  "case_id": "case_repro_reg_wallet_731",
+  "title": "Wallet Backend SAC Trustline State Mutation (Reproduced)",
+  "summary": "Independently reproduced defect based on stellar/wallet-backend issue #731.",
+  "classification": "reproduced_regression",
+  "source": {
+    "kind": "upstream_issue",
+    "url": "https://github.com/stellar/wallet-backend/issues/731",
+    "repository": "stellar/wallet-backend",
+    "issue_number": 731,
+    "pull_request_number": 734,
+    "retrieved_at": "2026-11-17T08:00:00Z",
+    "notes": "Reproduced differential behaviour between affected v0.1.0 and fixed v0.2.0."
+  },
+  "network": {
+    "name": "Public Global Stellar Network",
+    "protocol_version": 20,
+    "ledger_sequence": 50000000
+  },
+  "input": {
+    "format": "LedgerCloseMeta",
+    "encoding": "xdr_binary",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "byte_length": 4096,
+    "object_path": "testdata/historical/wallet_backend_731.xdr"
+  },
+  "expectations": [
+    {
+      "assertion_id": "assertion_ledger_seq",
+      "kind": "ledger_sequence_equals",
+      "expected": 50000000,
+      "description": "Checks ledger sequence 50000000."
+    }
+  ],
+  "implementation_context": {
+    "stellar_core_version": null,
+    "sdk_versions": {
+      "stellar-go-sdk": "v0.9.0"
+    },
+    "indexer_version": "v0.1.0"
+  },
+  "limitations": [
+    "Differential run evidence preserved."
+  ],
+  "reproduction": {
+    "affected_implementation": {
+      "name": "stellar-wallet-backend",
+      "version": "v0.1.0"
+    },
+    "fixed_implementation": {
+      "name": "stellar-wallet-backend",
+      "version": "v0.2.0"
+    },
+    "differential_evidence": {
+      "evidence_ref": "evidence/runs/run_repro_731_bundle.json",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "notes": "Verified state mismatch on trustline balance creation"
+    }
+  }
+}`
+
 func TestValidateManifestBytes_ValidCases(t *testing.T) {
 	t.Run("valid synthetic fixture", func(t *testing.T) {
 		domainCase, manifest, err := corpus.ValidateManifestBytes([]byte(validSyntheticFixtureJSON))
@@ -157,6 +220,25 @@ func TestValidateManifestBytes_ValidCases(t *testing.T) {
 		}
 		if *domainCase.Source.IssueNumber != 731 {
 			t.Errorf("expected issue number 731, got %v", domainCase.Source.IssueNumber)
+		}
+	})
+
+	t.Run("valid reproduced regression", func(t *testing.T) {
+		domainCase, manifest, err := corpus.ValidateManifestBytes([]byte(validReproducedRegressionJSON))
+		if err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+		if domainCase.CaseID != "case_repro_reg_wallet_731" {
+			t.Errorf("CaseID mismatch: got %q", domainCase.CaseID)
+		}
+		if manifest.Classification != corpus.ClassificationReproducedRegression {
+			t.Errorf("Classification mismatch: got %q", manifest.Classification)
+		}
+		if domainCase.Reproduction == nil {
+			t.Fatalf("expected non-nil Reproduction in domainCase")
+		}
+		if domainCase.Reproduction.AffectedImplementation.Version != "v0.1.0" {
+			t.Errorf("expected affected version v0.1.0, got %q", domainCase.Reproduction.AffectedImplementation.Version)
 		}
 	})
 
@@ -359,12 +441,68 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 			},
 			expectedError: "object_path",
 		},
+		{
+			name: "reproduced_regression missing reproduction section",
+			modifyJSON: func(s string) string {
+				idx := strings.Index(s, `"reproduction":`)
+				if idx != -1 {
+					comma := strings.LastIndex(s[:idx], ",")
+					if comma != -1 {
+						return s[:comma] + "\n}"
+					}
+					return s[:idx] + "\n}"
+				}
+				return s
+			},
+			expectedError: "reproduction",
+		},
+		{
+			name: "reproduced_regression missing affected_implementation",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, "\"affected_implementation\": {\n      \"name\": \"stellar-wallet-backend\",\n      \"version\": \"v0.1.0\"\n    },", "", 1)
+			},
+			expectedError: "affected_implementation",
+		},
+		{
+			name: "reproduced_regression missing differential_evidence",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"differential_evidence": {
+      "evidence_ref": "evidence/runs/run_repro_731_bundle.json",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "notes": "Verified state mismatch on trustline balance creation"
+    }`, `"missing_diff": {}`, 1)
+			},
+			expectedError: "differential_evidence",
+		},
+		{
+			name: "historical_regression with contradictory source kind synthetic_construction",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"kind": "upstream_issue"`, `"kind": "synthetic_construction"`, 1)
+			},
+			expectedError: "kind",
+		},
+		{
+			name: "synthetic_fixture with non-synthetic source kind",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"kind": "synthetic_construction"`, `"kind": "upstream_issue"`, 1)
+			},
+			expectedError: "kind",
+		},
+		{
+			name: "synthetic_fixture claiming Public Global Stellar Network",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"name": "Synthetic Standalone Network"`, `"name": "Public Global Stellar Network"`, 1)
+			},
+			expectedError: "name",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := tc.modifyJSON(validSyntheticFixtureJSON)
-			if strings.Contains(tc.name, "historical_regression") || strings.Contains(tc.name, "transaction_hash_present") {
+			if strings.Contains(tc.name, "reproduced_regression") {
+				input = tc.modifyJSON(validReproducedRegressionJSON)
+			} else if strings.Contains(tc.name, "historical_regression") || strings.Contains(tc.name, "transaction_hash_present") {
 				input = tc.modifyJSON(validHistoricalRegressionJSON)
 			}
 

@@ -1,6 +1,6 @@
 # Stellar Integrity Workbench — Evidence Classification and Provenance Policy
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Status:** Authoritative Policy
 **Applies to:** Corpus Manifests, Replay Jobs, Evidence Bundles, and Reports
 
@@ -24,33 +24,37 @@ Every corpus case manifest must declare exactly one `classification` from the fo
   - `source.kind` must be one of: `galexie_archive`, `captive_core`, `rpc_endpoint`.
   - `source.url` must be a valid, reachable URI pointing to the archive source or official object reference.
   - `source.retrieved_at` must record the exact RFC 3339 timestamp when the original input was obtained.
-  - `network.ledger_sequence` must be a positive integer matching the authentic closed ledger.
-  - `network.protocol_version` must match the authentic ledger's protocol version.
+  - `network.ledger_sequence` must be a positive integer matching the authentic closed ledger (range `1` to `4,294,967,295`).
+  - `network.protocol_version` must match the authentic ledger's protocol version (range `0` to `4,294,967,295`).
   - `input.sha256` must match the exact binary SHA-256 digest of the unparsed, unnormalized object.
 - **Strict Prohibition:** Synthetic fixtures, constructed test cases, or unverified historical bug reproducers must **never** be classified as `verified_ledger_sample`.
 
 ### 2.2 `historical_regression`
 - **Definition:** A test case associated with a documented historical defect in an official Stellar SDK, indexer, or client library.
 - **Mandatory Requirements:**
+  - `source.kind` must be one of: `upstream_issue`, `upstream_pr`, `advisory`, `other`.
   - Must cite the documented upstream issue, pull request, or repository advisory (via `source.url`, or `source.repository` with `source.issue_number` / `source.pull_request_number`).
   - Must record the source of the expected behaviour (e.g. the merged PR, test suite patch, or protocol specification).
   - If the historical issue provides a constructed or partial reproducer rather than authentic captured ledger bytes, it must be noted factually in `source.notes`.
-- **Integrity Rule:** A historical bug report does not automatically make an associated fixture an authentic ledger sample. Unless authentic closed ledger bytes were captured from a network at the time, the input remains a constructed regression reproducer, not a captured ledger.
+- **Contradiction Prohibition:** `historical_regression` must **never** declare `source.kind` as `synthetic_construction`. A historical defect case requires traceable external defect documentation.
 
 ### 2.3 `reproduced_regression`
 - **Definition:** A historical or newly discovered defect that has been independently executed, reproduced, and verified by this Workbench, with captured deterministic execution evidence.
 - **Mandatory Requirements:**
-  - Must satisfy all requirements of `historical_regression`.
-  - Must include documented execution evidence demonstrating the differential behaviour between affected and fixed versions.
-  - Must include exact adapter and SDK versions demonstrating both failure and expected behaviour.
+  - Must satisfy all requirements of `historical_regression` (including traceable upstream defect reference).
+  - Must include the structured `reproduction` section:
+    - `reproduction.affected_implementation`: exact implementation name and affected version.
+    - `reproduction.fixed_implementation`: exact implementation name and resolved/fixed version.
+    - `reproduction.differential_evidence`: evidence reference URI/path and SHA-256 hash of the captured differential execution evidence artifact.
+- **Strict Prohibition:** An issue URL alone is **never** sufficient to qualify a case as `reproduced_regression`. Documented differential execution evidence is mandatory.
 
 ### 2.4 `synthetic_fixture`
 - **Definition:** Manually constructed, generated, or mutated test input designed to exercise specific parser paths, boundary conditions, malformed byte sequences, or schema corner cases.
 - **Mandatory Requirements:**
-  - Must be explicitly labelled as `synthetic_fixture`.
+  - Must declare `source.kind` strictly as `synthetic_construction`.
   - Must describe the construction methodology in `summary` and `source.notes`.
-  - Must not claim or imply that the input was observed on Stellar Mainnet, Testnet, or Futurenet.
-- **Strict Prohibition:** A synthetic fixture must **never** be presented as captured public ledger data, even if it mimics a real ledger sequence number.
+  - `network.name` must describe a synthetic or standalone test network (e.g. `Synthetic Standalone Network`).
+- **Strict Prohibition:** A synthetic fixture must **never** claim or imply that it was captured from a public Stellar network (`Public Global Stellar Network`, `mainnet`).
 
 ### 2.5 `unverified`
 - **Definition:** A candidate or submitted input whose provenance, retrieval chain, or expected behaviour is incomplete or still undergoing review.
@@ -65,9 +69,13 @@ Every corpus case manifest must declare exactly one `classification` from the fo
    The original binary object is hashed (SHA-256) and stored in its authentic, byte-for-byte representation before any parsing, normalization, or decoding occurs.
 2. **Hash Integrity:**
    The SHA-256 digest is always recomputed from the original bytes. A supplied hash in a manifest is treated as an assertion to be verified, never as an authoritative truth.
-3. **No Coercion or Silent Defaulting:**
+3. **Exact Numeric Representation:**
+   Ledger sequences, transaction counts, and protocol versions are bounded integers (`uint32` max `4,294,967,295`). They must never undergo floating-point coercion or precision loss.
+4. **Safe Canonical Object Paths:**
+   `input.object_path` must be a canonical relative path without parent directory traversals (`..`), backslashes, or absolute filesystem prefixes.
+5. **No Coercion or Silent Defaulting:**
    Unknown ledger sequences, protocol versions, or software versions must be recorded as `null`, never guessed or populated with synthetic defaults.
-4. **Execution Status vs Conformance Outcome:**
+6. **Execution Status vs Conformance Outcome:**
    An operational failure (such as an adapter crash, timeout, or missing file) is an execution error (`failed`), not a conformance regression (`regression`). Conversely, a run that successfully completes and discovers an SDK mismatch completes with status `completed` and outcome `regression`.
 
 ---
@@ -76,8 +84,8 @@ Every corpus case manifest must declare exactly one `classification` from the fo
 
 | Current State | Target State | Permitted By | Requirements |
 |---|---|---|---|
-| `unverified` | `synthetic_fixture` | Reviewer | Documented construction and purpose |
+| `unverified` | `synthetic_fixture` | Reviewer | Documented construction and purpose; `synthetic_construction` kind |
 | `unverified` | `historical_regression` | Reviewer | Documented issue/PR citations and expected behaviour |
-| `historical_regression` | `reproduced_regression` | Workbench execution | Captured differential evidence bundle across versions |
+| `historical_regression` | `reproduced_regression` | Workbench execution | Captured differential evidence bundle with affected/fixed version records and SHA-256 hashes |
 | `unverified` | `verified_ledger_sample` | Reviewer | Independent verification of source archive, cryptographic hashes, and closed ledger sequence |
 | Any | `unverified` | Reviewer / Author | Source contested, corrupted, or under investigation |

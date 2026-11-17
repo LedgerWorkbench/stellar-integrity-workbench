@@ -2,6 +2,7 @@ package corpus
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/domain"
@@ -9,17 +10,18 @@ import (
 
 // Manifest represents the JSON schema representation of a corpus case manifest.
 type Manifest struct {
-	SchemaVersion         string                `json:"schema_version"`
-	CaseID                string                `json:"case_id"`
-	Title                 string                `json:"title"`
-	Summary               string                `json:"summary"`
-	Classification        Classification        `json:"classification"`
-	Source                Source                `json:"source"`
-	Network               Network               `json:"network"`
-	Input                 Input                 `json:"input"`
-	Expectations          []Expectation         `json:"expectations"`
-	ImplementationContext ImplementationContext `json:"implementation_context"`
-	Limitations           []string              `json:"limitations"`
+	SchemaVersion         string                       `json:"schema_version"`
+	CaseID                string                       `json:"case_id"`
+	Title                 string                       `json:"title"`
+	Summary               string                       `json:"summary"`
+	Classification        Classification               `json:"classification"`
+	Source                Source                       `json:"source"`
+	Network               Network                      `json:"network"`
+	Input                 Input                        `json:"input"`
+	Expectations          []Expectation                `json:"expectations"`
+	ImplementationContext ImplementationContext        `json:"implementation_context"`
+	Limitations           []string                     `json:"limitations"`
+	Reproduction          *domain.ReproductionEvidence `json:"reproduction,omitempty"`
 }
 
 // Source represents the provenance metadata in a manifest.
@@ -141,6 +143,28 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 		return nil, fmt.Errorf("invalid input.object_path: %w", err)
 	}
 
+	// Validate classification consistency
+	switch m.Classification {
+	case ClassificationSyntheticFixture:
+		if m.Source.Kind != "synthetic_construction" {
+			return nil, fmt.Errorf("synthetic_fixture must have source.kind 'synthetic_construction', got %q", m.Source.Kind)
+		}
+		if isPublicNetworkName(m.Network.Name) {
+			return nil, fmt.Errorf("synthetic_fixture cannot claim public Stellar network %q", m.Network.Name)
+		}
+	case ClassificationHistoricalRegression:
+		if m.Source.Kind == "synthetic_construction" {
+			return nil, fmt.Errorf("contradictory classification: historical_regression cannot have source.kind 'synthetic_construction'")
+		}
+	case ClassificationReproducedRegression:
+		if m.Source.Kind == "synthetic_construction" {
+			return nil, fmt.Errorf("contradictory classification: reproduced_regression cannot have source.kind 'synthetic_construction'")
+		}
+		if m.Reproduction == nil {
+			return nil, fmt.Errorf("reproduced_regression requires reproduction evidence")
+		}
+	}
+
 	return &domain.Case{
 		SchemaVersion:  m.SchemaVersion,
 		CaseID:         m.CaseID,
@@ -174,6 +198,16 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 			SDKVersions:        sdkVersions,
 			IndexerVersion:     m.ImplementationContext.IndexerVersion,
 		},
-		Limitations: limitations,
+		Limitations:  limitations,
+		Reproduction: m.Reproduction,
 	}, nil
+}
+
+// isPublicNetworkName reports whether a network name claims to be the public Stellar network.
+func isPublicNetworkName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == "public global stellar network" ||
+		lower == "public" ||
+		lower == "mainnet" ||
+		strings.HasPrefix(lower, "public global stellar network ;")
 }

@@ -51,6 +51,26 @@ type ImplementationContext struct {
 	IndexerVersion     *string           `json:"indexer_version"`
 }
 
+// ImplementationTarget records a software implementation name and version.
+type ImplementationTarget struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// DifferentialEvidence captures proof of differential behaviour between versions.
+type DifferentialEvidence struct {
+	EvidenceRef string `json:"evidence_ref"`
+	SHA256      string `json:"sha256"`
+	Notes       string `json:"notes,omitempty"`
+}
+
+// ReproductionEvidence records verified differential evidence required for reproduced_regression cases.
+type ReproductionEvidence struct {
+	AffectedImplementation ImplementationTarget `json:"affected_implementation"`
+	FixedImplementation    ImplementationTarget `json:"fixed_implementation"`
+	DifferentialEvidence   DifferentialEvidence `json:"differential_evidence"`
+}
+
 // Case represents a validated, immutable corpus case domain model.
 type Case struct {
 	SchemaVersion         string                 `json:"schema_version"`
@@ -64,4 +84,5 @@ type Case struct {
 	Expectations          []AssertionExpectation `json:"expectations"`
 	ImplementationContext ImplementationContext  `json:"implementation_context"`
 	Limitations           []string               `json:"limitations"`
+	Reproduction          *ReproductionEvidence  `json:"reproduction,omitempty"`
 }
