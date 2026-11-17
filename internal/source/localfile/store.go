@@ -17,12 +17,19 @@ import (
 
 const (
 	// DefaultMaxBytes is 64 MiB (67,108,864 bytes).
-	// Rationale: Stellar ledger-close metadata envelopes (LedgerCloseMeta) under current
-	// network protocol limits (Protocol 20-22) are naturally bounded by transaction and operation
-	// limits per ledger, rarely exceeding several megabytes even during peak network traffic.
-	// 64 MiB provides generous headroom for all historical mainnet ledgers while strictly
-	// bounding worker memory consumption to protect against out-of-memory denial-of-service.
+	// Rationale: 64 MiB serves as a configurable per-input safety ceiling that bounds
+	// the amount of data read and retained in memory for a single corpus input object.
+	// It accommodates large historical ledger-close metadata envelopes (including
+	// LedgerCloseMeta v1 across Protocol 20–22) while protecting worker processes against
+	// unconstrained memory exhaustion from oversized or hostile input files.
+	// Note: This per-input limit does not represent a global worker memory budget;
+	// concurrent replay processing requires a separate aggregate memory and concurrency policy.
 	DefaultMaxBytes int64 = 64 * 1024 * 1024
+
+	// MaxAllowedBytes is the maximum platform-safe configuration limit for input sizes.
+	// It is set to int(^uint(0)>>1) - 1 (i.e. math.MaxInt - 1) to guarantee that
+	// maxBytes + 1 can never overflow int or int64, and reportedSize fits in a platform int.
+	MaxAllowedBytes int64 = int64(int(^uint(0)>>1) - 1)
 )
 
 // Config defines the configuration for the local file source store.
@@ -45,6 +52,13 @@ func DefaultConfig(rootDir string) Config {
 }
 
 // Store provides secure, root-confined access to local corpus object files.
+//
+// Confinement Boundaries:
+// Store relies on Go 1.25's os.Root to confine file operations to the designated root directory.
+// Callers must note that os.Root is not a complete operating system sandbox: it does not prevent
+// traversal across mount boundaries or virtual filesystems (e.g. /proc, bind mounts) if mounted inside
+// the root directory, nor does it inherently prohibit device nodes. Thus, the storage root must be a
+// trusted directory, and post-open regular-file verification remains strictly mandatory.
 type Store struct {
 	root     *os.Root
 	rootDir  string
@@ -58,8 +72,8 @@ func NewStore(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("%w: storage root directory must not be empty", ErrInvalidConfig)
 	}
 
-	if cfg.MaxBytes <= 0 {
-		return nil, fmt.Errorf("%w: max bytes %d must be greater than zero", ErrInvalidConfig, cfg.MaxBytes)
+	if cfg.MaxBytes <= 0 || cfg.MaxBytes > MaxAllowedBytes {
+		return nil, fmt.Errorf("%w: max bytes %d must be between 1 and %d", ErrInvalidConfig, cfg.MaxBytes, MaxAllowedBytes)
 	}
 
 	cleanRoot := filepath.Clean(cfg.RootDir)
@@ -122,8 +136,8 @@ func (s *Store) LoadAndVerify(objectPath string, expectedLength int64, expectedS
 		return nil, fmt.Errorf("%w: %v", ErrUnsafePath, err)
 	}
 
-	if expectedLength < 0 {
-		return nil, fmt.Errorf("%w: expected byte length must be non-negative, got %d", ErrByteLengthMismatch, expectedLength)
+	if expectedLength < 0 || expectedLength > MaxAllowedBytes {
+		return nil, fmt.Errorf("%w: expected byte length %d must be between 0 and %d", ErrByteLengthMismatch, expectedLength, MaxAllowedBytes)
 	}
 
 	expectedHex := strings.ToLower(strings.TrimSpace(expectedSHA256))
@@ -159,15 +173,23 @@ func (s *Store) LoadAndVerify(objectPath string, expectedLength int64, expectedS
 
 // readAndVerify performs the bounded streaming read, hash computation, and integrity checks.
 func readAndVerify(r io.Reader, reportedSize, maxBytes, expectedLength int64, expectedHex, objectPath string) (*VerifiedInput, error) {
+	if maxBytes <= 0 || maxBytes > MaxAllowedBytes {
+		return nil, fmt.Errorf("%w: max bytes %d must be between 1 and %d", ErrInvalidConfig, maxBytes, MaxAllowedBytes)
+	}
+	if expectedLength < 0 || expectedLength > MaxAllowedBytes {
+		return nil, fmt.Errorf("%w: expected byte length %d must be between 0 and %d", ErrByteLengthMismatch, expectedLength, MaxAllowedBytes)
+	}
+
 	// Stage 2 bounded streaming read: read up to maxBytes + 1 bytes.
-	// If reading encounters more than maxBytes, the file grew after the initial stat.
+	// Because maxBytes <= MaxAllowedBytes (math.MaxInt - 1), maxBytes + 1 cannot overflow.
 	limit := maxBytes
 	limitedReader := io.LimitReader(r, limit+1)
 	hasher := sha256.New()
 	tee := io.TeeReader(limitedReader, hasher)
 
 	var buf bytes.Buffer
-	if reportedSize > 0 && reportedSize <= limit {
+	// reportedSize is safely converted to int only after verifying it is within platform safe bounds
+	if reportedSize > 0 && reportedSize <= limit && reportedSize <= MaxAllowedBytes {
 		buf.Grow(int(reportedSize))
 	}
 

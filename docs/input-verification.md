@@ -39,6 +39,12 @@ Before any filesystem operation occurs, `input.object_path` is validated via `co
 ### 3.2 Confinement via `os.OpenRoot` (Go 1.25)
 File access is confined to the storage root using Go 1.25's `os.OpenRoot` API. All path resolutions are scoped beneath the open `os.Root` directory descriptor.
 
+**Confinement Boundaries & Limitations:**
+- **Not an OS Sandbox:** `os.Root` is not a complete operating system sandbox or container isolation boundary.
+- **Mount Boundaries:** `os.Root` does not prohibit crossing filesystem mount boundaries or traversing into subtrees mounted inside the root (such as bind mounts, loop mounts, or virtual filesystems like `/proc` or `/sys` if mounted inside the root path).
+- **Special Device Nodes:** `os.Root` does not prohibit opening special files (character devices, block devices, FIFOs) if present within the root directory; post-open regular-file verification (`info.Mode().IsRegular()`) remains strictly mandatory.
+- **Trusted Storage Root:** The storage root directory itself must be an administrator-controlled, trusted filesystem location containing only authentic corpus data.
+
 ### 3.3 Symbolic Link Policy
 - **Symlink Escapes:** Any symbolic link attempting to reference a target outside the storage root (via parent traversals or absolute targets) is rejected by root confinement.
 - **Internal Symlinks:** Symbolic links whose targets remain strictly within the storage root and resolve to regular files are followed, provided the target satisfies all size and integrity checks.
@@ -61,8 +67,9 @@ Unbounded input reads present a denial-of-service vector and are prohibited. Fil
 2. **Bounded Streaming Read:** File contents are read using `io.LimitReader` bounded to `MaxBytes + 1`. If more than `MaxBytes` are read, the file grew after its initial stat, and it is rejected immediately with `ErrFileTooLarge`.
 3. **Configurable Default Maximum (64 MiB):**
    - The default limit is `64 MiB` (`DefaultMaxBytes = 67,108,864` bytes).
-   - **Rationale:** In Stellar Mainnet (Protocol 20-22), `LedgerCloseMeta` envelope sizes are bounded by protocol ledger operation limits. Real ledger closes measure under several megabytes even during high transaction volumes. A 64 MiB limit provides ample headroom for historical envelopes while bounding memory consumption.
-   - **Validation:** Zero and negative limit values are strictly rejected on Store initialization with `ErrInvalidConfig`. The limit cannot be silently disabled.
+   - **Rationale:** 64 MiB serves as a configurable per-input safety ceiling that bounds the amount of data read and retained in memory for a single corpus input object. It accommodates large historical ledger-close metadata envelopes (including `LedgerCloseMeta` v1 across Protocol 20–22) while protecting worker processes against unconstrained memory exhaustion from oversized or hostile input files.
+   - **Worker Memory Budget Notice:** Crucially, this per-input ceiling does not represent a global worker memory budget; concurrent replay workloads require separate aggregate memory allocation, pooling, and concurrency throttling policies at the engine worker level.
+   - **Validation & Platform Bounds:** Configured limits are validated against platform-safe integer bounds: `MaxAllowedBytes = int64(int(^uint(0)>>1) - 1)`. Non-positive values (zero or negative) and values exceeding `MaxAllowedBytes` are strictly rejected on Store initialization with `ErrInvalidConfig`. The limit cannot be silently disabled or overflowed.
 
 ---
 

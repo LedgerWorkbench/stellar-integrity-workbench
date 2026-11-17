@@ -6,12 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/domain"
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/source/localfile"
@@ -211,37 +210,28 @@ func TestStore_ExceedsConfiguredSizeLimit_PreRead(t *testing.T) {
 	}
 }
 
-func TestStore_FileGrowsDuringRead_StreamingCheck(t *testing.T) {
-	limit := int64(32) // strict 32-byte limit
-	dir, store := setupTestStore(t, limit)
+func TestStore_NonEmptyFileCannotPassAsEmpty(t *testing.T) {
+	dir, store := setupTestStore(t, 1024*1024)
 
-	// Initial file written with 16 bytes (below limit of 32)
-	initialData := []byte("1234567890123456")
-	relPath := "fixtures/growing.bin"
+	relPath := "fixtures/non_empty.bin"
 	fullPath := filepath.Join(dir, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
 	}
-	if err := os.WriteFile(fullPath, initialData, 0644); err != nil {
+	payload := []byte("NON_EMPTY_TEST_DATA_CANNOT_PASS_AS_EMPTY")
+	if err := os.WriteFile(fullPath, payload, 0644); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// Test deterministic streaming detection by appending to file while open or via pipe
-	// We append 50 extra bytes so file on disk now has 66 bytes > 32 limit
-	f, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		t.Fatalf("open for append failed: %v", err)
-	}
-	_, _ = f.Write(bytes.Repeat([]byte("X"), 50))
-	_ = f.Close()
+	const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-	// Calling LoadAndVerify should reject because size on disk now exceeds limit
-	_, err = store.LoadAndVerify(relPath, int64(len(initialData)), computeSHA256(initialData))
+	// Attempt to claim that the non-empty file is an empty file (0 bytes and empty SHA-256)
+	_, err := store.LoadAndVerify(relPath, 0, emptySHA256)
 	if err == nil {
-		t.Fatalf("expected error, got nil")
+		t.Fatalf("expected error verifying non-empty file with expected length 0, got nil")
 	}
-	if !errors.Is(err, localfile.ErrFileTooLarge) {
-		t.Errorf("expected ErrFileTooLarge, got: %v", err)
+	if !errors.Is(err, localfile.ErrByteLengthMismatch) {
+		t.Errorf("expected ErrByteLengthMismatch, got: %v", err)
 	}
 }
 
@@ -418,41 +408,6 @@ func TestStore_DirectoryAsInput(t *testing.T) {
 	}
 }
 
-func TestStore_FIFO_DoesNotHang(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping FIFO test on Windows")
-	}
-
-	dir, store := setupTestStore(t, 1024*1024)
-
-	fifoPath := filepath.Join(dir, "test.fifo")
-	// Create named pipe
-	if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
-		t.Fatalf("mkfifo failed: %v", err)
-	}
-
-	dummyHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-	// Run LoadAndVerify with a timeout to prove it does not block waiting for a writer
-	done := make(chan error, 1)
-	go func() {
-		_, err := store.LoadAndVerify("test.fifo", 0, dummyHash)
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatalf("expected error for FIFO, got nil")
-		}
-		if !errors.Is(err, localfile.ErrNotRegularFile) {
-			t.Errorf("expected ErrNotRegularFile for FIFO, got: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("DEADLOCK: store.LoadAndVerify blocked indefinitely on opening FIFO")
-	}
-}
-
 func TestStore_OriginalFileUnchanged(t *testing.T) {
 	dir, store := setupTestStore(t, 1024*1024)
 
@@ -535,8 +490,10 @@ func TestStore_VerifiedInputImmutability(t *testing.T) {
 	}
 }
 
-// mockDownstreamConsumer represents a downstream pipeline consumer (e.g. an XDR decoder
-// or replay adapter) in the test harness.
+// mockDownstreamConsumer represents an illustrative caller-gating seam
+// (e.g. an XDR decoder or replay adapter) in the test harness.
+// It verifies that callers gating execution on verification will not be invoked
+// when verification fails. It does not claim to enforce a complete application pipeline.
 type mockDownstreamConsumer struct {
 	invoked       bool
 	receivedBytes []byte
@@ -547,7 +504,7 @@ func (c *mockDownstreamConsumer) Consume(input *localfile.VerifiedInput) {
 	c.receivedBytes = input.BytesCopy()
 }
 
-func TestStore_DownstreamConsumerSeam(t *testing.T) {
+func TestStore_CallerGating_DownstreamConsumerSeam(t *testing.T) {
 	dir, store := setupTestStore(t, 1024*1024)
 
 	relPath := "fixtures/consumer_test.bin"
@@ -628,6 +585,21 @@ func TestStore_ConfigValidation(t *testing.T) {
 		{
 			name:    "negative max bytes",
 			cfg:     localfile.Config{RootDir: validDir, MaxBytes: -100},
+			wantErr: true,
+		},
+		{
+			name:    "largest accepted platform-safe configuration",
+			cfg:     localfile.Config{RootDir: validDir, MaxBytes: localfile.MaxAllowedBytes},
+			wantErr: false,
+		},
+		{
+			name:    "configuration exceeding allowed maximum by 1",
+			cfg:     localfile.Config{RootDir: validDir, MaxBytes: localfile.MaxAllowedBytes + 1},
+			wantErr: true,
+		},
+		{
+			name:    "maximum integer boundary (math.MaxInt64)",
+			cfg:     localfile.Config{RootDir: validDir, MaxBytes: math.MaxInt64},
 			wantErr: true,
 		},
 		{

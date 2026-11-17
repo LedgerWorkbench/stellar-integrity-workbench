@@ -15,9 +15,20 @@
 // traversals (".."), current directory segments ("."), empty segments, backslashes,
 // and control characters are rejected.
 //
-// Filesystem operations are strictly confined to the configured storage root using Go 1.25's
-// os.OpenRoot API. The os.Root handle ensures that all file access remains beneath the
-// designated root directory tree.
+// Filesystem operations are confined to the configured storage root using Go 1.25's
+// os.OpenRoot API. The os.Root handle ensures that relative file access cannot escape
+// above the designated root directory via parent traversals ("..") or external symlinks.
+//
+// Confinement Boundaries and Limitations:
+//   - os.Root is not a complete operating system sandbox or container isolation boundary.
+//   - It does not prohibit crossing filesystem mount boundaries or traversing into subtrees
+//     mounted inside the root (e.g. bind mounts, loop mounts, or virtual filesystems such as
+//     /proc or /sys if mounted within the root path).
+//   - It does not prohibit opening special files (such as character devices, block devices,
+//     or FIFOs) present within the directory tree; therefore, post-open regular-file
+//     verification (info.Mode().IsRegular()) remains strictly mandatory.
+//   - The storage root directory itself must be an administrator-controlled, trusted
+//     filesystem location containing only authentic corpus data.
 //
 // # Symlink Policy
 //
@@ -55,13 +66,19 @@
 //     initial stat, and it is rejected immediately.
 //
 // The default maximum file size is 64 MiB (DefaultMaxBytes = 67,108,864 bytes).
-// Rationale: In Stellar Mainnet (Protocol 20-22), LedgerCloseMeta envelopes are bounded
-// by ledger transaction and operation limits, typically measuring under a few megabytes per
-// closed ledger. 64 MiB provides safe headroom for the largest historical ledger envelopes
-// while preventing out-of-memory denial-of-service conditions in worker processes.
+// Rationale: 64 MiB serves as a configurable per-input safety ceiling that bounds
+// the amount of data read and retained in memory for a single corpus input object.
+// It accommodates large historical ledger-close metadata envelopes (including
+// LedgerCloseMeta v1 across Protocol 20–22) while protecting worker processes against
+// unconstrained memory exhaustion from oversized or hostile input files.
 //
-// Invalid size configurations (zero or negative limits) are rejected during Store initialization
-// with ErrInvalidConfig. Limits cannot be silently disabled.
+// Crucially, this per-input limit does not represent a global worker memory budget;
+// concurrent replay workloads require separate aggregate memory allocation, pooling,
+// and concurrency throttling policies at the engine worker level.
+//
+// Invalid size configurations (zero, negative limits, or values exceeding platform-safe
+// integer bounds MaxAllowedBytes) are rejected during Store initialization with ErrInvalidConfig.
+// Limits cannot be silently disabled.
 //
 // # Integrity Verification
 //
