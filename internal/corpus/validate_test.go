@@ -127,12 +127,18 @@ const validHistoricalRegressionJSON = `{
   ]
 }`
 
-// validReproducedRegressionJSON represents a valid reproduced regression manifest with structured reproduction evidence.
-const validReproducedRegressionJSON = `{
+// structuralReproducedRegressionSchemaFixtureJSON is a STRUCTURAL SCHEMA-VALIDATION FIXTURE ONLY.
+//
+// DISCLAIMER AND TEST NOTICE:
+// 1. This fixture does NOT represent an actual reproduction performed or verified by Stellar Integrity Workbench.
+// 2. Its test evidence reference ("evidence/test_placeholders/mock_differential_bundle.json") and SHA-256 digest are structural mock placeholders.
+// 3. This test solely verifies JSON schema acceptance and domain mapping for the "reproduced_regression" schema shape.
+// 4. No production corpus entry, verified differential execution bundle, or authentic reproduction artifact is created by this test.
+const structuralReproducedRegressionSchemaFixtureJSON = `{
   "schema_version": "1.0.0",
-  "case_id": "case_repro_reg_wallet_731",
-  "title": "Wallet Backend SAC Trustline State Mutation (Reproduced)",
-  "summary": "Independently reproduced defect based on stellar/wallet-backend issue #731.",
+  "case_id": "case_schema_fixture_reproduced_regression_mock",
+  "title": "Schema Validation Fixture: Reproduced Regression Structural Test",
+  "summary": "Structural mock fixture for schema acceptance testing only; not an authentic reproduction.",
   "classification": "reproduced_regression",
   "source": {
     "kind": "upstream_issue",
@@ -141,7 +147,7 @@ const validReproducedRegressionJSON = `{
     "issue_number": 731,
     "pull_request_number": 734,
     "retrieved_at": "2026-11-17T08:00:00Z",
-    "notes": "Reproduced differential behaviour between affected v0.1.0 and fixed v0.2.0."
+    "notes": "Structural schema test fixture; mock reproduction metadata."
   },
   "network": {
     "name": "Public Global Stellar Network",
@@ -153,7 +159,7 @@ const validReproducedRegressionJSON = `{
     "encoding": "xdr_binary",
     "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "byte_length": 4096,
-    "object_path": "testdata/historical/wallet_backend_731.xdr"
+    "object_path": "testdata/fixtures/reproduced_regression_mock.xdr"
   },
   "expectations": [
     {
@@ -183,9 +189,9 @@ const validReproducedRegressionJSON = `{
       "version": "v0.2.0"
     },
     "differential_evidence": {
-      "evidence_ref": "evidence/runs/run_repro_731_bundle.json",
+      "evidence_ref": "evidence/test_placeholders/mock_differential_bundle.json",
       "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      "notes": "Verified state mismatch on trustline balance creation"
+      "notes": "Structural placeholder for schema validation; not an authentic reproduction bundle."
     }
   }
 }`
@@ -223,12 +229,12 @@ func TestValidateManifestBytes_ValidCases(t *testing.T) {
 		}
 	})
 
-	t.Run("valid reproduced regression", func(t *testing.T) {
-		domainCase, manifest, err := corpus.ValidateManifestBytes([]byte(validReproducedRegressionJSON))
+	t.Run("valid reproduced regression schema structure fixture", func(t *testing.T) {
+		domainCase, manifest, err := corpus.ValidateManifestBytes([]byte(structuralReproducedRegressionSchemaFixtureJSON))
 		if err != nil {
 			t.Fatalf("unexpected validation error: %v", err)
 		}
-		if domainCase.CaseID != "case_repro_reg_wallet_731" {
+		if domainCase.CaseID != "case_schema_fixture_reproduced_regression_mock" {
 			t.Errorf("CaseID mismatch: got %q", domainCase.CaseID)
 		}
 		if manifest.Classification != corpus.ClassificationReproducedRegression {
@@ -459,18 +465,14 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 		{
 			name: "reproduced_regression missing affected_implementation",
 			modifyJSON: func(s string) string {
-				return strings.Replace(s, "\"affected_implementation\": {\n      \"name\": \"stellar-wallet-backend\",\n      \"version\": \"v0.1.0\"\n    },", "", 1)
+				return strings.Replace(s, `"affected_implementation":`, `"missing_affected":`, 1)
 			},
 			expectedError: "affected_implementation",
 		},
 		{
 			name: "reproduced_regression missing differential_evidence",
 			modifyJSON: func(s string) string {
-				return strings.Replace(s, `"differential_evidence": {
-      "evidence_ref": "evidence/runs/run_repro_731_bundle.json",
-      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      "notes": "Verified state mismatch on trustline balance creation"
-    }`, `"missing_diff": {}`, 1)
+				return strings.Replace(s, `"differential_evidence":`, `"missing_diff":`, 1)
 			},
 			expectedError: "differential_evidence",
 		},
@@ -550,7 +552,7 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := tc.modifyJSON(validSyntheticFixtureJSON)
 			if strings.Contains(tc.name, "reproduced_regression") {
-				input = tc.modifyJSON(validReproducedRegressionJSON)
+				input = tc.modifyJSON(structuralReproducedRegressionSchemaFixtureJSON)
 			} else if strings.Contains(tc.name, "historical_regression") || strings.Contains(tc.name, "transaction_hash_present") {
 				input = tc.modifyJSON(validHistoricalRegressionJSON)
 			}
