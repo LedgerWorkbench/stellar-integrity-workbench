@@ -289,6 +289,20 @@ func TestValidateManifestBytes_InvalidCases(t *testing.T) {
 			expectedError: "expected",
 		},
 		{
+			name: "out of range assertion expected ledger sequence (> uint32 max / > 2^53)",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"expected": 100,`, `"expected": 9007199254740993,`, 1)
+			},
+			expectedError: "expected",
+		},
+		{
+			name: "decimal float assertion expected ledger sequence",
+			modifyJSON: func(s string) string {
+				return strings.Replace(s, `"expected": 100,`, `"expected": 100.5,`, 1)
+			},
+			expectedError: "expected",
+		},
+		{
 			name: "invalid assertion expected value type for transaction_hash_present (short hash)",
 			modifyJSON: func(s string) string {
 				return strings.Replace(s, `"expected": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`, `"expected": "short_hash"`, 1)

@@ -86,10 +86,45 @@ func (m *Manifest) ToDomain() (*domain.Case, error) {
 			return nil, fmt.Errorf("assertion %q has invalid kind: %w", exp.AssertionID, err)
 		}
 
+		var typedExpected any
+		switch kind {
+		case domain.AssertionKindLedgerSequenceEquals:
+			n, err := domain.ParseExactInteger(exp.Expected)
+			if err != nil {
+				return nil, fmt.Errorf("assertion %q has invalid expected ledger sequence: %w", exp.AssertionID, err)
+			}
+			if n < 0 || n > domain.MaxStellarSequence {
+				return nil, fmt.Errorf("assertion %q expected ledger sequence %d out of range [0, %d]", exp.AssertionID, n, domain.MaxStellarSequence)
+			}
+			typedExpected = n
+
+		case domain.AssertionKindTransactionCountEquals:
+			n, err := domain.ParseExactInteger(exp.Expected)
+			if err != nil {
+				return nil, fmt.Errorf("assertion %q has invalid expected transaction count: %w", exp.AssertionID, err)
+			}
+			if n < 0 || n > domain.MaxStellarTransactionCount {
+				return nil, fmt.Errorf("assertion %q expected transaction count %d out of range [0, %d]", exp.AssertionID, n, domain.MaxStellarTransactionCount)
+			}
+			typedExpected = n
+
+		case domain.AssertionKindTransactionHashPresent,
+			domain.AssertionKindDecodedTypeEquals,
+			domain.AssertionKindInputHashEquals:
+			s, ok := exp.Expected.(string)
+			if !ok {
+				return nil, fmt.Errorf("assertion %q expected string value for %s, got %T", exp.AssertionID, kind, exp.Expected)
+			}
+			typedExpected = s
+
+		default:
+			typedExpected = exp.Expected
+		}
+
 		expectations[i] = domain.AssertionExpectation{
 			AssertionID: exp.AssertionID,
 			Kind:        kind,
-			Expected:    exp.Expected,
+			Expected:    typedExpected,
 			Description: exp.Description,
 		}
 	}

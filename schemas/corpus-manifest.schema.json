@@ -110,11 +110,13 @@
         },
         "protocol_version": {
           "type": ["integer", "null"],
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "ledger_sequence": {
           "type": ["integer", "null"],
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         }
       }
     },
@@ -190,7 +192,8 @@
               "properties": {
                 "expected": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "maximum": 4294967295
                 }
               }
             }
@@ -203,7 +206,8 @@
               "properties": {
                 "expected": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "maximum": 4294967295
                 }
               }
             }
@@ -307,11 +311,13 @@
             "properties": {
               "protocol_version": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "maximum": 4294967295
               },
               "ledger_sequence": {
                 "type": "integer",
-                "minimum": 1
+                "minimum": 1,
+                "maximum": 4294967295
               }
             }
           }
