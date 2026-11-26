@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LedgerWorkbench/stellar-integrity-workbench/schemas/adapter-request.schema.json",
+  "title": "AdapterRequest",
+  "description": "Adapter process protocol v1 request schema for Stellar Integrity Workbench. This schema defines the JSON contract between the workbench worker and approved adapter processes. The request is delivered via stdin as exactly one JSON document.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "case_id",
+    "operation",
+    "input_path",
+    "input_format",
+    "input_sha256",
+    "target",
+    "limits"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Protocol schema version. Must be exactly \"1\" for this version of the adapter protocol.",
+      "const": "1"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for the replay execution run.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "case_id": {
+      "type": "string",
+      "description": "Identifier for the corpus case being processed.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "operation": {
+      "type": "string",
+      "description": "The operation the adapter should perform.",
+      "enum": ["decode_ledger_meta"]
+    },
+    "input_path": {
+      "type": "string",
+      "description": "Absolute path to the worker-created, read-only input file in the per-run temporary directory. This path is constructed by the worker and must never come from an untrusted source.",
+      "minLength": 1
+    },
+    "input_format": {
+      "type": "string",
+      "description": "The expected XDR type format of the input.",
+      "enum": ["LedgerCloseMeta"]
+    },
+    "input_sha256": {
+      "type": "string",
+      "description": "SHA-256 digest of the input file (64 lowercase hex characters).",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "target": {
+      "type": "object",
+      "description": "Target adapter identity and version requirements.",
+      "required": ["adapter_id", "adapter_version", "sdk_version"],
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "type": "string",
+          "description": "Registered adapter identifier.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "adapter_version": {
+          "type": "string",
+          "description": "Expected adapter version.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sdk_version": {
+          "type": "string",
+          "description": "Expected SDK version used by the adapter.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "description": "Execution resource limits.",
+      "required": ["timeout_ms", "max_input_bytes", "max_output_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Maximum wall-clock execution time in milliseconds.",
+          "minimum": 1,
+          "maximum": 3600000
+        },
+        "max_input_bytes": {
+          "type": "integer",
+          "description": "Maximum input file size in bytes.",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "description": "Maximum stdout output size in bytes.",
+          "minimum": 1,
+          "maximum": 1073741824
+        }
+      }
+    }
+  }
+}

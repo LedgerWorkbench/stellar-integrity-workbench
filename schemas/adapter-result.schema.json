@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LedgerWorkbench/stellar-integrity-workbench/schemas/adapter-result.schema.json",
+  "title": "AdapterResult",
+  "description": "Adapter process protocol v1 result schema for Stellar Integrity Workbench. This schema defines the JSON contract for the result written by an adapter process to stdout. Exactly one JSON document must be written.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "case_id",
+    "adapter_id",
+    "adapter_version",
+    "sdk_version",
+    "execution",
+    "input",
+    "decode",
+    "semantic_projection",
+    "diagnostics",
+    "capabilities_used"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Protocol schema version. Must be exactly \"1\".",
+      "const": "1"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Run identifier matching the original request.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "case_id": {
+      "type": "string",
+      "description": "Case identifier matching the original request.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "adapter_id": {
+      "type": "string",
+      "description": "Adapter identifier matching the registry entry.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "adapter_version": {
+      "type": "string",
+      "description": "Adapter version as reported by the adapter process.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sdk_version": {
+      "type": "string",
+      "description": "SDK version used by the adapter.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "execution": {
+      "type": "object",
+      "description": "Process execution outcome.",
+      "required": ["status", "exit_code", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Execution status.",
+          "enum": ["completed", "failed", "cancelled"]
+        },
+        "exit_code": {
+          "type": "integer",
+          "description": "Process exit code.",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "duration_ms": {
+          "type": "integer",
+          "description": "Actual execution duration in milliseconds.",
+          "minimum": 0
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "description": "Input verification echoed by the adapter.",
+      "required": ["sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "description": "SHA-256 digest of the input file as observed by the adapter.",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "decode": {
+      "type": "object",
+      "description": "Decoding outcome.",
+      "required": ["status", "detected_type"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Decoding status.",
+          "enum": [
+            "not_attempted",
+            "success",
+            "invalid_input",
+            "unsupported_type",
+            "unsupported_protocol"
+          ]
+        },
+        "detected_type": {
+          "type": ["string", "null"],
+          "description": "Detected XDR type, or null if decoding was not attempted or failed."
+        }
+      }
+    },
+    "semantic_projection": {
+      "type": ["object", "null"],
+      "description": "Canonical semantic projection of the decoded input, or null if unavailable."
+    },
+    "diagnostics": {
+      "type": "array",
+      "description": "Structured diagnostic messages from the adapter.",
+      "items": {
+        "type": "object",
+        "required": ["stage", "code", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "type": "string",
+            "description": "Processing stage that produced the diagnostic.",
+            "minLength": 1
+          },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable diagnostic code.",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic message. Must not contain secrets, tokens, or sensitive paths."
+          }
+        }
+      }
+    },
+    "capabilities_used": {
+      "type": "array",
+      "description": "List of adapter capabilities exercised during this invocation.",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
