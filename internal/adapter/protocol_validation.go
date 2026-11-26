@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -73,6 +74,13 @@ func validateAgainstSchema(sch *jsonschema.Schema, data []byte, kind string) err
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil {
 		return fmt.Errorf("invalid %s JSON: %w", kind, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("invalid %s JSON: trailing JSON value after document", kind)
+		}
+		return fmt.Errorf("invalid %s JSON: trailing data after document: %w", kind, err)
 	}
 	if err := sch.Validate(v); err != nil {
 		return fmt.Errorf("adapter %s schema validation failed: %w", kind, err)

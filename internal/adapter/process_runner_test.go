@@ -233,6 +233,12 @@ func main() {
 		fmt.Print(` + "`" + `{"extra":true}` + "`" + `)
 		os.Exit(0)
 
+	case "case_trailing_brace":
+		out, _ := json.Marshal(baseRes("completed", 0, "not_attempted"))
+		fmt.Print(string(out))
+		fmt.Print("}")
+		os.Exit(0)
+
 	case "case_empty_stdout":
 		fmt.Fprintln(os.Stderr, "no stdout produced")
 		os.Exit(1)
@@ -469,6 +475,7 @@ func TestProcessRunner_MalformedAndInvalidResponsesRejected(t *testing.T) {
 	}{
 		{"case_malformed_json", ErrAdapterMalformedOutput},
 		{"case_extra_json", ErrAdapterMalformedOutput},
+		{"case_trailing_brace", ErrAdapterMalformedOutput},
 		{"case_empty_stdout", ErrAdapterProcessFailure},
 		{"case_mismatched_run_id", ErrAdapterResponseMismatch},
 		{"case_mismatched_case_id", ErrAdapterResponseMismatch},

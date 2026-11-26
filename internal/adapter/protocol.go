@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 )
@@ -363,7 +364,8 @@ func EncodeRequest(req *Request) ([]byte, error) {
 	return json.Marshal(req)
 }
 
-// DecodeRequest strictly decodes a JSON request, rejecting unknown fields.
+// DecodeRequest strictly decodes a JSON request, rejecting unknown fields
+// and any trailing JSON values or non-whitespace bytes.
 func DecodeRequest(data []byte) (*Request, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -373,9 +375,8 @@ func DecodeRequest(data []byte) (*Request, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 
-	// Reject trailing data
-	if dec.More() {
-		return nil, fmt.Errorf("%w: trailing data after JSON document", ErrInvalidRequest)
+	if err := ensureDecoderEOF(dec, ErrInvalidRequest); err != nil {
+		return nil, err
 	}
 
 	return &req, nil
@@ -386,7 +387,8 @@ func EncodeResult(res *Result) ([]byte, error) {
 	return json.Marshal(res)
 }
 
-// DecodeResult strictly decodes a JSON result, rejecting unknown fields.
+// DecodeResult strictly decodes a JSON result, rejecting unknown fields
+// and any trailing JSON values or non-whitespace bytes.
 func DecodeResult(data []byte) (*Result, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -396,10 +398,22 @@ func DecodeResult(data []byte) (*Result, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidResult, err)
 	}
 
-	// Reject trailing data
-	if dec.More() {
-		return nil, fmt.Errorf("%w: trailing data after JSON document", ErrInvalidResult)
+	if err := ensureDecoderEOF(dec, ErrInvalidResult); err != nil {
+		return nil, err
 	}
 
 	return &res, nil
+}
+
+// ensureDecoderEOF verifies that no additional JSON values or non-whitespace
+// trailing bytes remain in the decoder stream.
+func ensureDecoderEOF(dec *json.Decoder, sentinel error) error {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("%w: trailing JSON value after document", sentinel)
+		}
+		return fmt.Errorf("%w: trailing data after JSON document: %v", sentinel, err)
+	}
+	return nil
 }

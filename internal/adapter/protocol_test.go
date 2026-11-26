@@ -728,3 +728,149 @@ func TestSchemaValidateResult_UnknownField(t *testing.T) {
 		t.Fatal("expected schema validation error for unknown field")
 	}
 }
+
+// --- Single-Document Trailing Data Regression Tests ---
+
+func TestDecodeRequest_SingleDocumentEnforcement(t *testing.T) {
+	base, err := EncodeRequest(validRequest())
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	t.Run("accepts trailing whitespace", func(t *testing.T) {
+		data := append(append([]byte{}, base...), []byte(" \n\t\r ")...)
+		decoded, err := DecodeRequest(data)
+		if err != nil {
+			t.Fatalf("expected trailing whitespace to be accepted, got: %v", err)
+		}
+		if decoded.RunID != "run_test_001" {
+			t.Fatalf("unexpected run_id: %q", decoded.RunID)
+		}
+	})
+
+	rejectCases := []struct {
+		name     string
+		trailing string
+	}{
+		{"second JSON object", `{"extra":true}`},
+		{"arbitrary trailing text", `trailing garbage`},
+		{"extra closing brace", `}`},
+		{"extra closing bracket", `]`},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			data := append(append([]byte{}, base...), []byte(tc.trailing)...)
+			_, err := DecodeRequest(data)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+			if !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("expected ErrInvalidRequest, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeResult_SingleDocumentEnforcement(t *testing.T) {
+	base, err := EncodeResult(validResult())
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	t.Run("accepts trailing whitespace", func(t *testing.T) {
+		data := append(append([]byte{}, base...), []byte(" \n\t\r ")...)
+		decoded, err := DecodeResult(data)
+		if err != nil {
+			t.Fatalf("expected trailing whitespace to be accepted, got: %v", err)
+		}
+		if decoded.RunID != "run_test_001" {
+			t.Fatalf("unexpected run_id: %q", decoded.RunID)
+		}
+	})
+
+	rejectCases := []struct {
+		name     string
+		trailing string
+	}{
+		{"second JSON object", `{"extra":true}`},
+		{"arbitrary trailing text", `trailing garbage`},
+		{"extra closing brace", `}`},
+		{"extra closing bracket", `]`},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			data := append(append([]byte{}, base...), []byte(tc.trailing)...)
+			_, err := DecodeResult(data)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+			if !errors.Is(err, ErrInvalidResult) {
+				t.Fatalf("expected ErrInvalidResult, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchemaValidateRequest_SingleDocumentEnforcement(t *testing.T) {
+	base, err := EncodeRequest(validRequest())
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	t.Run("accepts trailing whitespace", func(t *testing.T) {
+		data := append(append([]byte{}, base...), []byte(" \n\t\r ")...)
+		if err := SchemaValidateRequest(data); err != nil {
+			t.Fatalf("expected trailing whitespace to be accepted, got: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		trailing string
+	}{
+		{"second JSON object", `{"extra":true}`},
+		{"arbitrary trailing text", `trailing garbage`},
+		{"extra closing brace", `}`},
+		{"extra closing bracket", `]`},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			data := append(append([]byte{}, base...), []byte(tc.trailing)...)
+			if err := SchemaValidateRequest(data); err == nil {
+				t.Fatalf("expected schema validation error for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestSchemaValidateResult_SingleDocumentEnforcement(t *testing.T) {
+	base, err := EncodeResult(validResult())
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	t.Run("accepts trailing whitespace", func(t *testing.T) {
+		data := append(append([]byte{}, base...), []byte(" \n\t\r ")...)
+		if err := SchemaValidateResult(data); err != nil {
+			t.Fatalf("expected trailing whitespace to be accepted, got: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		trailing string
+	}{
+		{"second JSON object", `{"extra":true}`},
+		{"arbitrary trailing text", `trailing garbage`},
+		{"extra closing brace", `}`},
+		{"extra closing bracket", `]`},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			data := append(append([]byte{}, base...), []byte(tc.trailing)...)
+			if err := SchemaValidateResult(data); err == nil {
+				t.Fatalf("expected schema validation error for %s", tc.name)
+			}
+		})
+	}
+}
