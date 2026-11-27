@@ -28,7 +28,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmpDir)
 
 	binName := "go-ingest-adapter"
 	if runtime.GOOS == "windows" {
@@ -39,11 +38,18 @@ func TestMain(m *testing.M) {
 	buildCmd := exec.Command("go", "build", "-o", testAdapterBinary, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build go-ingest-adapter: %v\n%s\n", err, string(out))
+		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to clean up temp dir %s: %v\n", tmpDir, rmErr)
+		}
 		os.Exit(1)
 	}
 
 	adapter.Init()
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	if err := os.RemoveAll(tmpDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to clean up temp dir %s: %v\n", tmpDir, err)
+	}
+	os.Exit(exitCode)
 }
 
 func makeSyntheticLedgerBytes(t *testing.T, seq uint32, protocol uint32) []byte {
