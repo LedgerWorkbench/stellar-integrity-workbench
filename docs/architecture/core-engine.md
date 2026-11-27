@@ -1,6 +1,6 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–6 implemented; Units 7–10 pending
+**Status:** Units 1–7 implemented; Units 8–10 pending
 
 ## 1. Implemented Components
 
@@ -87,6 +87,11 @@
 - **Unit 5 projection mapping:** `assertion.ProjectionFromGoIngest` maps `goingest.SemanticProjection` into `domain.SemanticProjection`, preserving `TransactionHashesTruncated` so `transaction_hash_present` returns `inconclusive` rather than `fail` when a hash is absent from a truncated list.
 - **Outcome policy:** `domain.DeriveOutcome` treats all v1 manifest expectations as required (`fail` -> `regression`, `inconclusive` -> `inconclusive`, all `skipped` -> `not_applicable`, all `pass` -> `pass`, mixed `pass`+`skipped` -> `inconclusive`).
 
-## 7. Remaining Work (Units 7–10)
+## 7. Unit 7: Immutable Evidence Bundle (`internal/evidence`, `schemas/evidence-bundle.schema.json`)
 
-- **Units 7–10:** Evidence bundle generation, report rendering, and full `workbench-worker` run command wiring.
+- **Manifest & schema:** Versioned `1.0.0` Draft 2020-12 schema (`schemas/evidence-bundle.schema.json`) preserving provenance, verified input integrity, worker/adapter metadata, UTC RFC 3339 run timestamps, typed assertions, structured diagnostics, and artifact SHA-256/byte-length records. See `docs/architecture/evidence-bundle.md`.
+- **Immutable storage & verification:** `evidence.WriteBundle` confines writes via `os.Root`, stores raw validated adapter stdout (`adapter.RunOutput.StdoutCopy()`), semantic projection, and ordered assertions exclusively (`O_EXCL`, `0400`), and runs `evidence.VerifyBundle` after writing to verify all hashes, byte lengths, and absence of unlisted files or symlinks.
+
+## 8. Remaining Work (Units 8–10)
+
+- **Units 8–10:** Report rendering, full `workbench-worker` run command wiring, and end-to-end integration.
