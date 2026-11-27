@@ -618,17 +618,17 @@ func TestProcessRunner_RealGoIngestAdapter_ProtocolIntegration(t *testing.T) {
 		t.Fatalf("input hash mismatch: got %q, want %q", out.Result.Input.SHA256, expectedHash)
 	}
 	if out.Result.Execution.Status != ExecutionStatusFailed {
-		t.Fatalf("expected execution.status %q while Unit 5 is pending, got %q",
+		t.Fatalf("expected execution.status %q for non-XDR input, got %q",
 			ExecutionStatusFailed, out.Result.Execution.Status)
 	}
-	if out.Result.Decode.Status != DecodeStatusNotAttempted {
-		t.Fatalf("expected decode.status %q while Unit 5 is pending, got %q",
-			DecodeStatusNotAttempted, out.Result.Decode.Status)
+	if out.Result.Decode.Status != DecodeStatusInvalidInput {
+		t.Fatalf("expected decode.status %q for non-XDR input, got %q",
+			DecodeStatusInvalidInput, out.Result.Decode.Status)
 	}
 	if out.Result.SemanticProjection != nil {
-		t.Fatalf("expected nil semantic_projection while Unit 5 is pending")
+		t.Fatalf("expected nil semantic_projection for non-XDR input")
 	}
-	if len(out.Result.Diagnostics) == 0 || out.Result.Diagnostics[0].Code != "decoder_not_implemented" {
-		t.Fatalf("expected decoder_not_implemented diagnostic, got %+v", out.Result.Diagnostics)
+	if len(out.Result.Diagnostics) == 0 || out.Result.Diagnostics[0].Code != "xdr_unmarshal_failed" {
+		t.Fatalf("expected xdr_unmarshal_failed diagnostic, got %+v", out.Result.Diagnostics)
 	}
 }
