@@ -38,9 +38,10 @@ The manifest (`manifest.json`) uses `schema_version: "1.0.0"` (`^1\.[0-9]+\.[0-9
 ## 3. Immutable Write Behaviour
 
 `evidence.WriteBundle(evidenceRoot, input)`:
-1. Validates all cross-entity invariants:
+1. Authoritative adapter stdout & result binding: whenever `AdapterOutput` is supplied, `WriteBundle` obtains the exact captured bytes via `StdoutCopy()`, re-decodes and validates them (`adapter.DecodeResult`, `adapter.SchemaValidateResult`, `adapter.ValidateResult`), and requires `reflect.DeepEqual(decoded, AdapterOutput.Result)`. All downstream projection/manifest building reads from the freshly decoded result so a mutated `Result` pointer can never alter archived evidence independently of `adapter-stdout.json`.
+2. Validates all cross-entity invariants:
    - Terminal run state, outcome rules, `VerifiedInput` vs `Case.Input`, `AdapterOutput` identity/exit-code/hash vs `Run`/`VerifiedInput`, UTC RFC 3339 timestamp ordering.
-   - For `completed` runs: requires non-empty `Case.Expectations`, 1-to-1 ordered `Assertions` matching expectation IDs, kinds, and exact expected values, `domain.DeriveOutcome(Assertions) == *Run.Outcome`, non-nil `AdapterOutput`/`Result` with `Execution.Status == "completed"`, `ActualExitCode == 0`, and non-empty `StdoutCopy()` (`adapter_stdout` and `assertions` artifacts are mandatory; `semantic_projection` is stored when non-null).
+   - For `completed` runs: requires non-empty `Case.Expectations`, `AdapterID == "go-ingest"` (failing closed for unknown adapter IDs until a persistent capability registry exists), `Execution.Status == "completed"`, `ActualExitCode == 0`, and non-empty `StdoutCopy()`. Independently recalculates all assertions using Unit 6 (`assertion.Evaluate`) from the trusted `VerifiedInput.SHA256()` and the re-decoded `goingest.SemanticProjection` (passing `nil` when raw stdout genuinely has `semantic_projection: null`, so `input_hash_equals` can pass while projection-dependent assertions yield `inconclusive`). Rejects any mismatch in assertion ID, kind, expected, observed, status, explanation, `evidence_refs`, or derived outcome.
    - For `failed` or `cancelled` runs: requires `Run.Outcome == nil` and permits pre-adapter failures without `AdapterOutput`.
 2. Confines filesystem operations to `evidenceRoot` via Go 1.25 `os.Root`.
 3. Refuses to overwrite an existing `<run-id>` directory (`ErrBundleExists`).
