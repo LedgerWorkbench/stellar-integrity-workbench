@@ -1,6 +1,6 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–8 implemented; Units 9–10 pending
+**Status:** Units 1–9 implemented; Unit 10 pending
 
 ## 1. Implemented Components
 
@@ -97,6 +97,12 @@
 - **Canonical input:** `reporting.RenderJSON(manifest)` and `reporting.RenderMarkdown(manifest)` accept a validated `*evidence.Manifest` only and do not perform filesystem I/O. See `docs/architecture/reporting.md`.
 - **Schema & safety:** `RenderJSON` reuses `schemas/evidence-bundle.schema.json` via `evidence.DecodeAndValidateManifest`; `RenderMarkdown` validates the manifest before rendering, displays complete provenance (`not recorded` when nil), and escapes all untrusted strings. Both renderers enforce a shared fail-closed sensitive-content check (`reporting.ErrUnsafeReportContent`) and preserve the strict separation between execution state (`completed`, `failed`, `cancelled`) and conformance outcome (`pass`, `regression`, `inconclusive`, `not_applicable`, or `null` for incomplete runs).
 
-## 9. Remaining Work (Units 9–10)
+## 9. Unit 9: Worker Command & Local Replay Pipeline (`cmd/workbench-worker`)
 
-- **Units 9–10:** Full `workbench-worker` run command wiring and end-to-end integration.
+- **CLI interface:** `workbench-worker run --manifest <path> --input-root <dir> --input <relpath> --output-dir <dir> [--json]` (plus `--timeout-ms`, `--max-input-bytes`, `--max-output-bytes`).
+- **Orchestration:** Generates a unique `run_<hex>` ID via `crypto/rand`, validates the bounded manifest via `corpus.ValidateManifestBytes`, verifies the input via `localfile.Store` (`os.Root`), resolves co-located `go-ingest-adapter` from `os.Executable()`'s directory, executes `adapter.ProcessRunner`, maps and evaluates assertions via Unit 6 (`assertion.Evaluate`), writes and independently verifies the immutable evidence bundle (`evidence.WriteBundle`), and writes exclusive `<run-id>.json` and `<run-id>.md` reports (`reporting.RenderJSON`, `reporting.RenderMarkdown`) outside the bundle directory.
+- **Exit codes:** `0` (`pass`), `1` (usage), `2` (input/manifest), `3` (adapter), `4` (`regression`), `5` (internal/evidence/report), `6` (`inconclusive`), `7` (`cancelled`), `8` (`not_applicable`).
+
+## 10. Remaining Work (Unit 10)
+
+- **Unit 10:** CI workflows and final Phase 6 documentation completion.
