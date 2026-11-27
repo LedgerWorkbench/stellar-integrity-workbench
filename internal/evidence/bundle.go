@@ -92,7 +92,7 @@ func WriteBundle(evidenceRoot string, input BuildInput) (*WriteResult, error) {
 
 	bundleDir := filepath.Join(cleanRoot, runID)
 	cleanupPartial := func() {
-		_ = os.RemoveAll(bundleDir)
+		_ = root.RemoveAll(runID)
 	}
 
 	if err := root.Mkdir(filepath.Join(runID, ArtifactsDirname), 0o700); err != nil {
@@ -202,6 +202,26 @@ func validateBuildInput(input BuildInput) error {
 		if input.Run.Outcome == nil || !input.Run.Outcome.IsValid() {
 			return fmt.Errorf("%w: completed run must have a valid conformance outcome", ErrInvalidBundleInput)
 		}
+		if len(input.Case.Expectations) == 0 {
+			return fmt.Errorf("%w: completed run requires non-empty case expectations", ErrInvalidBundleInput)
+		}
+		if err := validateCompletedAssertions(input.Case.Expectations, input.Assertions, *input.Run.Outcome); err != nil {
+			return err
+		}
+		if input.AdapterOutput == nil || input.AdapterOutput.Result == nil {
+			return fmt.Errorf("%w: completed run requires non-nil adapter output and result", ErrInvalidBundleInput)
+		}
+		if len(input.AdapterOutput.StdoutCopy()) == 0 {
+			return fmt.Errorf("%w: completed run requires non-empty raw adapter stdout", ErrInvalidBundleInput)
+		}
+		if input.AdapterOutput.Result.Execution.Status != adapter.ExecutionStatusCompleted {
+			return fmt.Errorf("%w: completed run requires adapter execution status %q, got %q",
+				ErrInvalidBundleInput, adapter.ExecutionStatusCompleted, input.AdapterOutput.Result.Execution.Status)
+		}
+		if input.AdapterOutput.ActualExitCode != 0 {
+			return fmt.Errorf("%w: completed run requires host-observed exit code 0, got %d",
+				ErrInvalidBundleInput, input.AdapterOutput.ActualExitCode)
+		}
 	} else if input.Run.Outcome != nil {
 		return fmt.Errorf("%w: non-completed run (state=%s) must not have a fabricated outcome",
 			ErrInvalidBundleInput, input.Run.State)
@@ -238,6 +258,10 @@ func validateBuildInput(input BuildInput) error {
 			return fmt.Errorf("%w: adapter output Result must not be nil", ErrInvalidBundleInput)
 		}
 		res := input.AdapterOutput.Result
+		if res.Execution.ExitCode != input.AdapterOutput.ActualExitCode {
+			return fmt.Errorf("%w: adapter result exit_code %d does not match host-observed exit code %d",
+				ErrInvalidBundleInput, res.Execution.ExitCode, input.AdapterOutput.ActualExitCode)
+		}
 		if res.RunID != input.Run.RunID {
 			return fmt.Errorf("%w: adapter result run_id %q does not match run %q",
 				ErrInvalidBundleInput, res.RunID, input.Run.RunID)
@@ -257,10 +281,15 @@ func validateBuildInput(input BuildInput) error {
 		}
 	}
 
+	seenAssertionIDs := make(map[string]struct{}, len(input.Assertions))
 	for i, a := range input.Assertions {
 		if strings.TrimSpace(a.AssertionID) == "" {
 			return fmt.Errorf("%w: assertion[%d] has empty assertion_id", ErrInvalidBundleInput, i)
 		}
+		if _, dup := seenAssertionIDs[a.AssertionID]; dup {
+			return fmt.Errorf("%w: duplicate assertion_id %q", ErrInvalidBundleInput, a.AssertionID)
+		}
+		seenAssertionIDs[a.AssertionID] = struct{}{}
 		if err := a.Kind.Validate(); err != nil {
 			return fmt.Errorf("%w: assertion %q: %v", ErrInvalidBundleInput, a.AssertionID, err)
 		}
@@ -270,6 +299,83 @@ func validateBuildInput(input BuildInput) error {
 	}
 
 	return nil
+}
+
+func validateCompletedAssertions(expectations []domain.AssertionExpectation, results []domain.AssertionResult, declaredOutcome domain.RunOutcome) error {
+	if len(results) == 0 {
+		return fmt.Errorf("%w: completed run requires non-empty assertion results", ErrInvalidBundleInput)
+	}
+	if len(results) != len(expectations) {
+		return fmt.Errorf("%w: completed run has %d assertion results, expected %d matching case expectations",
+			ErrInvalidBundleInput, len(results), len(expectations))
+	}
+
+	seen := make(map[string]struct{}, len(results))
+	for i := range expectations {
+		exp := &expectations[i]
+		res := &results[i]
+		if res.AssertionID != exp.AssertionID {
+			return fmt.Errorf("%w: assertion[%d] ID %q does not match expected %q",
+				ErrInvalidBundleInput, i, res.AssertionID, exp.AssertionID)
+		}
+		if _, dup := seen[res.AssertionID]; dup {
+			return fmt.Errorf("%w: duplicate assertion_id %q", ErrInvalidBundleInput, res.AssertionID)
+		}
+		seen[res.AssertionID] = struct{}{}
+
+		if res.Kind != exp.Kind {
+			return fmt.Errorf("%w: assertion %q kind %q does not match expected %q",
+				ErrInvalidBundleInput, res.AssertionID, res.Kind, exp.Kind)
+		}
+		if err := compareExactExpected(exp.Kind, exp.Expected, res.Expected); err != nil {
+			return fmt.Errorf("%w: assertion %q expected value mismatch: %v",
+				ErrInvalidBundleInput, res.AssertionID, err)
+		}
+		if err := res.Status.Validate(); err != nil {
+			return fmt.Errorf("%w: assertion %q invalid status: %v",
+				ErrInvalidBundleInput, res.AssertionID, err)
+		}
+	}
+
+	derivedOutcome, err := domain.DeriveOutcome(results)
+	if err != nil {
+		return fmt.Errorf("%w: derive outcome from assertions: %v", ErrInvalidBundleInput, err)
+	}
+	if derivedOutcome != declaredOutcome {
+		return fmt.Errorf("%w: declared run outcome %q disagrees with derived outcome %q",
+			ErrInvalidBundleInput, declaredOutcome, derivedOutcome)
+	}
+	return nil
+}
+
+func compareExactExpected(kind domain.AssertionKind, expVal, resVal any) error {
+	switch kind {
+	case domain.AssertionKindLedgerSequenceEquals, domain.AssertionKindTransactionCountEquals:
+		eInt, err := domain.ParseExactInteger(expVal)
+		if err != nil {
+			return fmt.Errorf("case expectation: %w", err)
+		}
+		rInt, err := domain.ParseExactInteger(resVal)
+		if err != nil {
+			return fmt.Errorf("assertion result: %w", err)
+		}
+		if eInt != rInt {
+			return fmt.Errorf("result %d != expectation %d", rInt, eInt)
+		}
+		return nil
+	case domain.AssertionKindTransactionHashPresent, domain.AssertionKindDecodedTypeEquals, domain.AssertionKindInputHashEquals:
+		eStr, ok1 := expVal.(string)
+		rStr, ok2 := resVal.(string)
+		if !ok1 || !ok2 {
+			return fmt.Errorf("expected string values, got %T and %T", expVal, resVal)
+		}
+		if eStr != rStr {
+			return fmt.Errorf("result %q != expectation %q", rStr, eStr)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported assertion kind %q", kind)
+	}
 }
 
 func buildPendingArtifacts(input BuildInput) ([]pendingArtifact, error) {
@@ -347,6 +453,8 @@ func buildManifest(input BuildInput, artifactRefs []ArtifactRef) *Manifest {
 	var adapterStatus *string
 	var adapterExitCode *int
 	var adapterDurationMs *int64
+	var hostExitCode *int
+	var hostDurationMs *int64
 	var adapterDiags []adapter.ResultDiagnostic
 	var stderrBytesSeen *int64
 	var stderrTruncated *bool
@@ -356,6 +464,14 @@ func buildManifest(input BuildInput, artifactRefs []ArtifactRef) *Manifest {
 		trunc := input.AdapterOutput.StderrTruncated
 		stderrBytesSeen = &seen
 		stderrTruncated = &trunc
+
+		hec := input.AdapterOutput.ActualExitCode
+		hdur := input.AdapterOutput.ActualDuration.Milliseconds()
+		if hdur < 0 {
+			hdur = 0
+		}
+		hostExitCode = &hec
+		hostDurationMs = &hdur
 
 		if input.AdapterOutput.Result != nil {
 			res := input.AdapterOutput.Result
@@ -438,6 +554,8 @@ func buildManifest(input BuildInput, artifactRefs []ArtifactRef) *Manifest {
 			AdapterExecutionStatus: adapterStatus,
 			AdapterExitCode:        adapterExitCode,
 			AdapterDurationMs:      adapterDurationMs,
+			HostExitCode:           hostExitCode,
+			HostDurationMs:         hostDurationMs,
 			Outcome:                outcomePtr,
 		},
 		Assertions: assertions,

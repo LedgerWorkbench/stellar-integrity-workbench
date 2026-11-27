@@ -132,6 +132,8 @@
         "adapter_execution_status",
         "adapter_exit_code",
         "adapter_duration_ms",
+        "host_exit_code",
+        "host_duration_ms",
         "outcome"
       ],
       "additionalProperties": false,
@@ -148,6 +150,8 @@
         },
         "adapter_exit_code": { "type": ["integer", "null"] },
         "adapter_duration_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "host_exit_code": { "type": ["integer", "null"] },
+        "host_duration_ms": { "type": ["integer", "null"], "minimum": 0 },
         "outcome": {
           "type": ["string", "null"],
           "enum": ["pass", "regression", "inconclusive", "not_applicable", null]

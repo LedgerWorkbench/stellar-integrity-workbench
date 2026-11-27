@@ -25,6 +25,9 @@ const (
 	// SupportedMajorVersionPrefix is the supported major schema version prefix.
 	SupportedMajorVersionPrefix = "1."
 
+	// MaxManifestBytes bounds the size of manifest.json read by VerifyBundle (1 MiB).
+	MaxManifestBytes int64 = 1 * 1024 * 1024
+
 	// ManifestFilename is the fixed manifest filename inside a run bundle.
 	ManifestFilename = "manifest.json"
 
@@ -50,6 +53,7 @@ var (
 func getEvidenceSchema() (*jsonschema.Schema, error) {
 	evidenceSchemaOnce.Do(func() {
 		c := jsonschema.NewCompiler()
+		c.AssertFormat()
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemas.EvidenceBundleSchemaJSON))
 		if err != nil {
 			evidenceSchemaErr = fmt.Errorf("parse evidence-bundle schema: %w", err)
@@ -120,6 +124,8 @@ type AdapterMetadata struct {
 }
 
 // RunMetadata records execution lifecycle timestamps, state, and conformance outcome.
+// AdapterDurationMs records the duration self-reported by the adapter;
+// HostDurationMs records the process wall-clock duration measured by the host runner.
 type RunMetadata struct {
 	StartedAt              string             `json:"started_at"`
 	CompletedAt            string             `json:"completed_at"`
@@ -127,6 +133,8 @@ type RunMetadata struct {
 	AdapterExecutionStatus *string            `json:"adapter_execution_status"`
 	AdapterExitCode        *int               `json:"adapter_exit_code"`
 	AdapterDurationMs      *int64             `json:"adapter_duration_ms"`
+	HostExitCode           *int               `json:"host_exit_code"`
+	HostDurationMs         *int64             `json:"host_duration_ms"`
 	Outcome                *domain.RunOutcome `json:"outcome"`
 }
 
@@ -253,13 +261,19 @@ func ValidateManifest(m *Manifest) error {
 		return fmt.Errorf("%w: negative input.byte_length %d", ErrManifestInvalid, m.Input.ByteLength)
 	}
 
-	startedAt, err := time.Parse(time.RFC3339, m.Run.StartedAt)
-	if err != nil {
-		return fmt.Errorf("%w: invalid run.started_at %q: %v", ErrManifestInvalid, m.Run.StartedAt, err)
+	if m.Provenance.RetrievedAt != nil {
+		if _, err := parseUTCRFC3339("provenance.retrieved_at", *m.Provenance.RetrievedAt); err != nil {
+			return err
+		}
 	}
-	completedAt, err := time.Parse(time.RFC3339, m.Run.CompletedAt)
+
+	startedAt, err := parseUTCRFC3339("run.started_at", m.Run.StartedAt)
 	if err != nil {
-		return fmt.Errorf("%w: invalid run.completed_at %q: %v", ErrManifestInvalid, m.Run.CompletedAt, err)
+		return err
+	}
+	completedAt, err := parseUTCRFC3339("run.completed_at", m.Run.CompletedAt)
+	if err != nil {
+		return err
 	}
 	if completedAt.Before(startedAt) {
 		return fmt.Errorf("%w: run.completed_at (%s) precedes run.started_at (%s)",
@@ -273,15 +287,23 @@ func ValidateManifest(m *Manifest) error {
 		if m.Run.Outcome == nil || !m.Run.Outcome.IsValid() {
 			return fmt.Errorf("%w: completed run must have a valid outcome", ErrManifestInvalid)
 		}
+		if len(m.Assertions) == 0 {
+			return fmt.Errorf("%w: completed run manifest must contain at least one assertion", ErrManifestInvalid)
+		}
 	} else if m.Run.Outcome != nil {
 		return fmt.Errorf("%w: non-completed run (state=%s) must not have an outcome (%s)",
 			ErrManifestInvalid, m.Run.State, *m.Run.Outcome)
 	}
 
+	seenAssertionIDs := make(map[string]struct{}, len(m.Assertions))
 	for i, a := range m.Assertions {
 		if strings.TrimSpace(a.AssertionID) == "" {
 			return fmt.Errorf("%w: assertion[%d] has empty assertion_id", ErrManifestInvalid, i)
 		}
+		if _, dup := seenAssertionIDs[a.AssertionID]; dup {
+			return fmt.Errorf("%w: duplicate assertion_id %q", ErrManifestInvalid, a.AssertionID)
+		}
+		seenAssertionIDs[a.AssertionID] = struct{}{}
 		if err := a.Kind.Validate(); err != nil {
 			return fmt.Errorf("%w: assertion %q: %v", ErrManifestInvalid, a.AssertionID, err)
 		}
@@ -290,7 +312,19 @@ func ValidateManifest(m *Manifest) error {
 		}
 	}
 
+	if m.Run.State == domain.RunStateCompleted {
+		derivedOutcome, err := domain.DeriveOutcome(m.Assertions)
+		if err != nil {
+			return fmt.Errorf("%w: derive outcome from manifest assertions: %v", ErrManifestInvalid, err)
+		}
+		if derivedOutcome != *m.Run.Outcome {
+			return fmt.Errorf("%w: manifest run.outcome %q does not match outcome %q derived from assertions",
+				ErrManifestInvalid, *m.Run.Outcome, derivedOutcome)
+		}
+	}
+
 	seenArtifacts := make(map[string]struct{}, len(m.Artifacts))
+	roleCounts := make(map[string]int, len(m.Artifacts))
 	for i, art := range m.Artifacts {
 		if err := ValidateArtifactPath(art.Path); err != nil {
 			return fmt.Errorf("%w: artifact[%d]: %v", ErrManifestInvalid, i, err)
@@ -299,6 +333,15 @@ func ValidateManifest(m *Manifest) error {
 			return fmt.Errorf("%w: duplicate artifact path %q", ErrManifestInvalid, art.Path)
 		}
 		seenArtifacts[art.Path] = struct{}{}
+
+		if !isValidArtifactRole(art.Role) {
+			return fmt.Errorf("%w: artifact %q has invalid role %q", ErrManifestInvalid, art.Path, art.Role)
+		}
+		roleCounts[art.Role]++
+		if roleCounts[art.Role] > 1 {
+			return fmt.Errorf("%w: duplicate artifact role %q", ErrManifestInvalid, art.Role)
+		}
+
 		if !IsValidSHA256(art.SHA256) {
 			return fmt.Errorf("%w: artifact %q has invalid sha256 %q", ErrManifestInvalid, art.Path, art.SHA256)
 		}
@@ -307,5 +350,42 @@ func ValidateManifest(m *Manifest) error {
 		}
 	}
 
+	if m.Run.State == domain.RunStateCompleted {
+		if roleCounts[ArtifactRoleAdapterStdout] != 1 {
+			return fmt.Errorf("%w: completed run manifest must include exactly one %q artifact",
+				ErrManifestInvalid, ArtifactRoleAdapterStdout)
+		}
+		if roleCounts[ArtifactRoleAssertions] != 1 {
+			return fmt.Errorf("%w: completed run manifest must include exactly one %q artifact",
+				ErrManifestInvalid, ArtifactRoleAssertions)
+		}
+	}
+
 	return nil
+}
+
+func parseUTCRFC3339(field, value string) (time.Time, error) {
+	if !strings.HasSuffix(value, "Z") {
+		return time.Time{}, fmt.Errorf("%w: %s %q must use UTC 'Z' suffix", ErrManifestInvalid, field, value)
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: invalid %s %q: %v", ErrManifestInvalid, field, value, err)
+	}
+	if _, offset := t.Zone(); offset != 0 {
+		return time.Time{}, fmt.Errorf("%w: %s %q must be in UTC", ErrManifestInvalid, field, value)
+	}
+	return t, nil
+}
+
+func isValidArtifactRole(role string) bool {
+	switch role {
+	case ArtifactRoleAdapterStdout,
+		ArtifactRoleSemanticProjection,
+		ArtifactRoleAssertions,
+		ArtifactRoleInputCopy:
+		return true
+	default:
+		return false
+	}
 }

@@ -1,12 +1,18 @@
 package evidence
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/domain"
 )
 
 // VerifiedArtifact records the verified metadata of a single stored artifact.
@@ -28,11 +34,13 @@ type VerificationResult struct {
 
 // VerifyBundle performs an independent, read-only verification of the evidence
 // bundle at <evidenceRoot>/<runID>:
-//  1. Validates manifest.json (strict JSON, no trailing data, Draft 2020-12 schema).
-//  2. Verifies manifest.run_id matches runID.
-//  3. Rejects symlinks, non-regular files, path traversal, and duplicate paths.
-//  4. Recomputes exact byte lengths and SHA-256 hashes of all referenced artifacts.
-//  5. Detects missing artifacts and any unlisted extra files or directories.
+//  1. Bounds manifest.json to MaxManifestBytes before JSON decoding.
+//  2. Validates manifest.json (strict JSON, no trailing data, Draft 2020-12 schema).
+//  3. Verifies manifest.run_id matches runID.
+//  4. Rejects symlinks, non-regular files, path traversal, and duplicate paths/roles.
+//  5. Recomputes exact byte lengths and SHA-256 hashes of all referenced artifacts.
+//  6. Verifies artifacts/assertions.json matches manifest.assertions when present.
+//  7. Scans the bundle directory strictly via runRoot.FS() to detect unlisted extra files.
 func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 	if err := ValidateRunID(runID); err != nil {
 		return nil, err
@@ -66,7 +74,7 @@ func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 	}
 	defer runRoot.Close()
 
-	manifestBytes, err := readRegularFileInRoot(runRoot, ManifestFilename)
+	manifestBytes, err := readBoundedRegularFileInRoot(runRoot, ManifestFilename, MaxManifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", ManifestFilename, err)
 	}
@@ -86,6 +94,7 @@ func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 	expectedFiles[ManifestFilename] = struct{}{}
 
 	verifiedArts := make([]VerifiedArtifact, 0, len(manifest.Artifacts))
+	var assertionsArtifactPath string
 	for _, art := range manifest.Artifacts {
 		if err := ValidateArtifactPath(art.Path); err != nil {
 			return nil, err
@@ -94,6 +103,9 @@ func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 			return nil, fmt.Errorf("%w: duplicate artifact reference %q", ErrManifestInvalid, art.Path)
 		}
 		expectedFiles[art.Path] = struct{}{}
+		if art.Role == ArtifactRoleAssertions {
+			assertionsArtifactPath = art.Path
+		}
 
 		actualSHA, actualLen, err := hashRegularFileInRoot(runRoot, art.Path)
 		if err != nil {
@@ -120,7 +132,13 @@ func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 		})
 	}
 
-	if err := checkNoExtraFiles(filepath.Join(cleanRoot, runID), expectedFiles); err != nil {
+	if assertionsArtifactPath != "" {
+		if err := verifyAssertionsConsistency(runRoot, assertionsArtifactPath, manifest.Assertions); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := checkNoExtraFilesInRoot(runRoot, expectedFiles); err != nil {
 		return nil, err
 	}
 
@@ -132,37 +150,61 @@ func VerifyBundle(evidenceRoot, runID string) (*VerificationResult, error) {
 	}, nil
 }
 
-func readRegularFileInRoot(runRoot *os.Root, relPath string) ([]byte, error) {
-	info, err := runRoot.Lstat(relPath)
+func openVerifiedRegularFileInRoot(runRoot *os.Root, relPath string) (*os.File, os.FileInfo, error) {
+	linfo, err := runRoot.Lstat(relPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%w: %q", ErrSymlinkRejected, relPath)
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("%w: %q", ErrSymlinkRejected, relPath)
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %q", ErrNotRegularFile, relPath)
+	if !linfo.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%w: %q", ErrNotRegularFile, relPath)
 	}
 	f, err := runRoot.Open(relPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	finfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !finfo.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%w: %q", ErrNotRegularFile, relPath)
+	}
+	if !os.SameFile(linfo, finfo) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%w: %q changed between lstat and open", ErrSymlinkRejected, relPath)
+	}
+	return f, finfo, nil
+}
+
+func readBoundedRegularFileInRoot(runRoot *os.Root, relPath string, maxBytes int64) ([]byte, error) {
+	f, finfo, err := openVerifiedRegularFileInRoot(runRoot, relPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(f)
+
+	if finfo.Size() > maxBytes {
+		return nil, fmt.Errorf("%w: %q size %d bytes exceeds maximum %d bytes",
+			ErrManifestInvalid, relPath, finfo.Size(), maxBytes)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%w: %q exceeds maximum %d bytes", ErrManifestInvalid, relPath, maxBytes)
+	}
+	return data, nil
 }
 
 func hashRegularFileInRoot(runRoot *os.Root, relPath string) (string, int64, error) {
-	info, err := runRoot.Lstat(relPath)
-	if err != nil {
-		return "", 0, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", 0, fmt.Errorf("%w: %q", ErrSymlinkRejected, relPath)
-	}
-	if !info.Mode().IsRegular() {
-		return "", 0, fmt.Errorf("%w: %q", ErrNotRegularFile, relPath)
-	}
-	f, err := runRoot.Open(relPath)
+	f, _, err := openVerifiedRegularFileInRoot(runRoot, relPath)
 	if err != nil {
 		return "", 0, err
 	}
@@ -170,8 +212,32 @@ func hashRegularFileInRoot(runRoot *os.Root, relPath string) (string, int64, err
 	return HashReader(f)
 }
 
-func checkNoExtraFiles(bundleDir string, expectedFiles map[string]struct{}) error {
-	topEntries, err := os.ReadDir(bundleDir)
+func verifyAssertionsConsistency(runRoot *os.Root, relPath string, manifestAssertions []domain.AssertionResult) error {
+	data, err := readBoundedRegularFileInRoot(runRoot, relPath, MaxManifestBytes)
+	if err != nil {
+		return fmt.Errorf("read assertions artifact %q: %w", relPath, err)
+	}
+	var artifactAssertions []domain.AssertionResult
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(&artifactAssertions); err != nil {
+		return fmt.Errorf("%w: malformed assertions artifact %q: %v", ErrManifestInvalid, relPath, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("%w: trailing JSON in assertions artifact %q", ErrManifestInvalid, relPath)
+	}
+
+	if !reflect.DeepEqual(artifactAssertions, manifestAssertions) {
+		return fmt.Errorf("%w: assertions artifact %q disagrees with manifest.assertions", ErrManifestInvalid, relPath)
+	}
+	return nil
+}
+
+func checkNoExtraFilesInRoot(runRoot *os.Root, expectedFiles map[string]struct{}) error {
+	rootFS := runRoot.FS()
+	topEntries, err := fs.ReadDir(rootFS, ".")
 	if err != nil {
 		return fmt.Errorf("read bundle directory: %w", err)
 	}
@@ -188,7 +254,7 @@ func checkNoExtraFiles(bundleDir string, expectedFiles map[string]struct{}) erro
 			if !entry.IsDir() {
 				return fmt.Errorf("%w: %q must be a directory", ErrNotRegularFile, ArtifactsDirname)
 			}
-			artEntries, err := os.ReadDir(filepath.Join(bundleDir, ArtifactsDirname))
+			artEntries, err := fs.ReadDir(rootFS, ArtifactsDirname)
 			if err != nil {
 				return fmt.Errorf("read artifacts directory: %w", err)
 			}
