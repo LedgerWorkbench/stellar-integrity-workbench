@@ -21,6 +21,9 @@ func RenderMarkdown(manifest *evidence.Manifest) ([]byte, error) {
 	if err := evidence.ValidateManifest(manifest); err != nil {
 		return nil, fmt.Errorf("cannot render Markdown report: %w", err)
 	}
+	if err := validateReportSafety(manifest); err != nil {
+		return nil, err
+	}
 
 	// Enforce the exact same schema validation path as RenderJSON so both
 	// renderers operate on identically valid manifests without mutating input.
@@ -43,12 +46,11 @@ func RenderMarkdown(manifest *evidence.Manifest) ([]byte, error) {
 	writeKV(&b, "Case ID", manifest.CaseID)
 	writeKV(&b, "Classification", string(manifest.Classification))
 	writeKV(&b, "Source Kind", manifest.Provenance.Kind)
-	if manifest.Provenance.URL != nil {
-		writeKV(&b, "Source URL", *manifest.Provenance.URL)
-	}
-	if manifest.Provenance.RetrievedAt != nil {
-		writeKV(&b, "Source Retrieved At", *manifest.Provenance.RetrievedAt)
-	}
+	writeKV(&b, "Source URL", formatOptString(manifest.Provenance.URL))
+	writeKV(&b, "Source Repository", formatOptString(manifest.Provenance.Repository))
+	writeKV(&b, "Source Issue Number", formatOptInt(manifest.Provenance.IssueNumber))
+	writeKV(&b, "Source Pull Request Number", formatOptInt(manifest.Provenance.PullRequestNumber))
+	writeKV(&b, "Source Retrieved At", formatOptString(manifest.Provenance.RetrievedAt))
 	writeKV(&b, "Source Notes", manifest.Provenance.Notes)
 	b.WriteByte('\n')
 

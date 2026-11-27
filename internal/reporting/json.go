@@ -19,6 +19,9 @@ func RenderJSON(manifest *evidence.Manifest) ([]byte, error) {
 	if err := evidence.ValidateManifest(manifest); err != nil {
 		return nil, fmt.Errorf("cannot render JSON report: %w", err)
 	}
+	if err := validateReportSafety(manifest); err != nil {
+		return nil, err
+	}
 
 	out, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
