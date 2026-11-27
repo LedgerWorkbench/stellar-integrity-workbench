@@ -160,6 +160,67 @@ func TestRenderSafety_RejectsSensitiveContentInBothRenderers(t *testing.T) {
 			},
 		},
 		{
+			name:   "camelCase_accessToken_property",
+			secret: "opaque-access-token-val",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]string{
+					"accessToken": "opaque-access-token-val",
+				}
+			},
+		},
+		{
+			name:   "camelCase_clientSecret_property",
+			secret: "opaque-client-secret-val",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Expected = map[string]string{
+					"clientSecret": "opaque-client-secret-val",
+				}
+			},
+		},
+		{
+			name:   "camelCase_privateKey_property",
+			secret: "opaque-private-key-val",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]string{
+					"privateKey": "opaque-private-key-val",
+				}
+			},
+		},
+		{
+			name:   "camelCase_secretAccessKey_property",
+			secret: "opaque-aws-secret-val",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]string{
+					"secretAccessKey": "opaque-aws-secret-val",
+				}
+			},
+		},
+		{
+			name:   "camelCase_sessionToken_property",
+			secret: "opaque-session-token-val",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]string{
+					"sessionToken": "opaque-session-token-val",
+				}
+			},
+		},
+		{
+			name:   "camelCase_url_query_accessToken",
+			secret: "tok-query-val-123",
+			mutate: func(m *evidence.Manifest) {
+				u := "https://example.invalid/ledger.xdr?accessToken=tok-query-val-123"
+				m.Provenance.URL = &u
+			},
+		},
+		{
+			name:   "camelCase_url_query_apiKey",
+			secret: "apikey-query-val-456",
+			mutate: func(m *evidence.Manifest) {
+				u := "https://example.invalid/ledger.xdr?apiKey=apikey-query-val-456"
+				m.Provenance.URL = &u
+			},
+		},
+		{
 			name:   "invalid_timestamp_containing_local_path_does_not_leak",
 			secret: "/home/alice/leak-in-timestamp",
 			mutate: func(m *evidence.Manifest) {

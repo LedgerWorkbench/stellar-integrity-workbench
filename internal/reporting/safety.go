@@ -33,52 +33,59 @@ var (
 )
 
 var sensitiveQueryParams = map[string]struct{}{
-	"access_token":         {},
-	"token":                {},
-	"api_key":              {},
-	"apikey":               {},
-	"key":                  {},
-	"secret":               {},
-	"password":             {},
-	"passwd":               {},
-	"pwd":                  {},
-	"auth":                 {},
-	"authorization":        {},
-	"sig":                  {},
-	"signature":            {},
-	"x-amz-signature":      {},
-	"x-amz-credential":     {},
-	"x-amz-security-token": {},
-	"x-goog-signature":     {},
-	"x-goog-credential":    {},
-	"sas":                  {},
-	"se":                   {},
-	"sp":                   {},
-	"sv":                   {},
-	"sr":                   {},
-	"st":                   {},
-	"refresh_token":        {},
-	"client_secret":        {},
-	"private_key":          {},
+	"accesstoken":       {},
+	"token":             {},
+	"apikey":            {},
+	"key":               {},
+	"secret":            {},
+	"password":          {},
+	"passwd":            {},
+	"pwd":               {},
+	"auth":              {},
+	"authorization":     {},
+	"sig":               {},
+	"signature":         {},
+	"xamzsignature":     {},
+	"xamzcredential":    {},
+	"xamzsecuritytoken": {},
+	"xgoogsignature":    {},
+	"xgoogcredential":   {},
+	"sas":               {},
+	"se":                {},
+	"sp":                {},
+	"sv":                {},
+	"sr":                {},
+	"st":                {},
+	"refreshtoken":      {},
+	"clientsecret":      {},
+	"privatekey":        {},
+	"authtoken":         {},
+	"secretkey":         {},
+	"signingkey":        {},
+	"secretaccesskey":   {},
+	"sessiontoken":      {},
+	"bearertoken":       {},
 }
 
 var sensitivePropertyKeys = map[string]struct{}{
-	"api_key":       {},
-	"apikey":        {},
-	"access_token":  {},
-	"refresh_token": {},
-	"password":      {},
-	"passwd":        {},
-	"pwd":           {},
-	"secret":        {},
-	"secret_key":    {},
-	"private_key":   {},
-	"client_secret": {},
-	"auth_token":    {},
-	"authorization": {},
-	"bearer":        {},
-	"token":         {},
-	"signing_key":   {},
+	"apikey":          {},
+	"accesstoken":     {},
+	"refreshtoken":    {},
+	"password":        {},
+	"passwd":          {},
+	"pwd":             {},
+	"secret":          {},
+	"secretkey":       {},
+	"privatekey":      {},
+	"clientsecret":    {},
+	"authtoken":       {},
+	"authorization":   {},
+	"bearer":          {},
+	"bearertoken":     {},
+	"token":           {},
+	"signingkey":      {},
+	"secretaccesskey": {},
+	"sessiontoken":    {},
 }
 
 // validateReportSafety marshals manifest to its canonical JSON representation,
@@ -142,9 +149,24 @@ func checkSafeJSONValue(path string, v any) error {
 	}
 }
 
+func normalizeCredentialKey(key string) string {
+	trimmed := strings.TrimSpace(key)
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	for _, r := range trimmed {
+		if r == '_' || r == '-' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func isSensitivePropertyKey(key string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(key, "-", "_")))
-	_, ok := sensitivePropertyKeys[normalized]
+	_, ok := sensitivePropertyKeys[normalizeCredentialKey(key)]
 	return ok
 }
 
@@ -213,7 +235,7 @@ func checkSafeHTTPURL(field, rawURL string) error {
 	}
 	q := u.Query()
 	for k := range q {
-		if _, sensitive := sensitiveQueryParams[strings.ToLower(k)]; sensitive {
+		if _, sensitive := sensitiveQueryParams[normalizeCredentialKey(k)]; sensitive {
 			return fmt.Errorf("%w: %s contains URL with sensitive query parameter %q", ErrUnsafeReportContent, field, k)
 		}
 	}

@@ -51,10 +51,10 @@ For `failed` or `cancelled` runs, any recorded assertions are labeled `Partial R
   - Unix absolute local filesystem paths (`/home/...`, `/tmp/...`, `/var/...`, `/etc/...`, `/Users/...`, `/mnt/...`, `/workspace/...`, etc., and `file://` URIs), while keeping normal public `https://` URLs and corpus-relative `object_path` values valid.
   - Windows drive-letter absolute paths (`C:\...`) and UNC paths (`\\server\share\...`).
   - Bearer authorization credentials (`Bearer ...`).
-  - Common credential assignments (`api_key`, `access_token`, `refresh_token`, `password`, `passwd`, `secret`, `private_key`, `client_secret`, `auth_token`).
+  - Common credential assignments (`api_key`, `access_token`, `refresh_token`, `password`, `passwd`, `secret`, `private_key`, `client_secret`, `auth_token`) and credential-like object property names (`api_key`/`api-key`/`apiKey`, `access_token`/`accessToken`, `refresh_token`/`refreshToken`, `client_secret`/`clientSecret`, `private_key`/`privateKey`, `auth_token`/`authToken`, `secret_key`/`secretKey`, `signing_key`/`signingKey`, `secret_access_key`/`secretAccessKey`, `session_token`/`sessionToken`, `bearer_token`/`bearerToken`, `password`, `passwd`, `pwd`, `secret`, `token`, `bearer`, `authorization`) matched case-insensitively across snake_case, kebab-case, and camelCase aliases.
   - PEM private-key headers (`-----BEGIN ... PRIVATE KEY-----`).
   - Stellar secret-key encodings (`S[A-Z2-7]{55}`).
-  - HTTP(S) URLs containing userinfo credentials (`user:pass@host`) or sensitive query parameters (`access_token`, `api_key`, `password`, `sig`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, etc.).
+  - HTTP(S) URLs containing userinfo credentials (`user:pass@host`) or sensitive query parameters (matched case-insensitively across snake_case, kebab-case, and camelCase aliases such as `access_token`/`accessToken`, `api_key`/`apiKey`, `password`, `sig`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `secretAccessKey`, `sessionToken`, etc.).
 - **Detection limitations:** Pattern-based detection is a defense-in-depth safeguard for recognizable sensitive content, not a substitute for upstream secret management or a guarantee that every possible secret format can be identified.
 - Both `RenderJSON` and `RenderMarkdown` are pure, deterministic functions over `*evidence.Manifest` and never mutate their input.
 
