@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LedgerWorkbench/stellar-integrity-workbench/schemas/evidence-bundle.schema.json",
+  "title": "EvidenceBundleManifest",
+  "description": "Immutable evidence bundle manifest schema v1.0.0 for Stellar Integrity Workbench replay runs.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "case_id",
+    "classification",
+    "provenance",
+    "input",
+    "worker",
+    "adapter",
+    "run",
+    "assertions",
+    "diagnostics",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^case_[a-z0-9_\\-]+$",
+      "minLength": 6,
+      "maxLength": 128
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "verified_ledger_sample",
+        "historical_regression",
+        "reproduced_regression",
+        "synthetic_fixture",
+        "unverified"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["kind", "notes"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "url": { "type": ["string", "null"] },
+        "repository": { "type": ["string", "null"] },
+        "issue_number": { "type": ["integer", "null"], "minimum": 1 },
+        "pull_request_number": { "type": ["integer", "null"], "minimum": 1 },
+        "retrieved_at": { "type": ["string", "null"], "format": "date-time" },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "input": {
+      "type": "object",
+      "required": [
+        "sha256",
+        "byte_length",
+        "format",
+        "encoding",
+        "object_path",
+        "detected_type",
+        "network_name",
+        "ledger_sequence",
+        "protocol_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "format": { "type": "string", "minLength": 1 },
+        "encoding": { "type": "string", "minLength": 1 },
+        "object_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*(/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)*$"
+        },
+        "detected_type": { "type": ["string", "null"] },
+        "network_name": { "type": "string", "minLength": 1 },
+        "ledger_sequence": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "protocol_version": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "required": ["version", "commit_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "commit_sha": { "type": ["string", "null"] }
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "required": ["adapter_id", "adapter_version", "sdk_version"],
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": { "type": "string", "minLength": 1 },
+        "adapter_version": { "type": "string", "minLength": 1 },
+        "sdk_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "started_at",
+        "completed_at",
+        "state",
+        "adapter_execution_status",
+        "adapter_exit_code",
+        "adapter_duration_ms",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "started_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "state": {
+          "type": "string",
+          "enum": ["completed", "failed", "cancelled"]
+        },
+        "adapter_execution_status": {
+          "type": ["string", "null"],
+          "enum": ["completed", "failed", "cancelled", null]
+        },
+        "adapter_exit_code": { "type": ["integer", "null"] },
+        "adapter_duration_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "outcome": {
+          "type": ["string", "null"],
+          "enum": ["pass", "regression", "inconclusive", "not_applicable", null]
+        }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "assertion_id",
+          "kind",
+          "expected",
+          "status",
+          "explanation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assertion_id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ledger_sequence_equals",
+              "transaction_count_equals",
+              "transaction_hash_present",
+              "decoded_type_equals",
+              "input_hash_equals"
+            ]
+          },
+          "expected": {},
+          "observed": {},
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "skipped", "inconclusive"]
+          },
+          "explanation": { "type": "string", "minLength": 1 },
+          "evidence_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "required": [
+        "adapter_diagnostics",
+        "limitations",
+        "adapter_stderr_bytes_seen",
+        "adapter_stderr_truncated"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "adapter_diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stage", "code", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "stage": { "type": "string", "minLength": 1 },
+              "code": { "type": "string", "minLength": 1 },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "adapter_stderr_bytes_seen": { "type": ["integer", "null"], "minimum": 0 },
+        "adapter_stderr_truncated": { "type": ["boolean", "null"] }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "role", "media_type", "byte_length", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^artifacts/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "adapter_stdout",
+              "semantic_projection",
+              "assertions",
+              "input_copy"
+            ]
+          },
+          "media_type": { "type": "string", "minLength": 1 },
+          "byte_length": { "type": "integer", "minimum": 0 },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

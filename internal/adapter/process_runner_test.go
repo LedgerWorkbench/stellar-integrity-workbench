@@ -633,4 +633,24 @@ func TestProcessRunner_RealGoIngestAdapter_ProtocolIntegration(t *testing.T) {
 	if len(out.Result.Diagnostics) == 0 || out.Result.Diagnostics[0].Code != "xdr_unmarshal_failed" {
 		t.Fatalf("expected xdr_unmarshal_failed diagnostic, got %+v", out.Result.Diagnostics)
 	}
+
+	raw1 := out.StdoutCopy()
+	if len(raw1) == 0 {
+		t.Fatal("expected non-empty StdoutCopy()")
+	}
+	decodedFromRaw, err := DecodeResult(raw1)
+	if err != nil {
+		t.Fatalf("DecodeResult(StdoutCopy()) failed: %v", err)
+	}
+	if decodedFromRaw.RunID != out.Result.RunID || decodedFromRaw.Input.SHA256 != out.Result.Input.SHA256 {
+		t.Errorf("StdoutCopy() decoded mismatch: got %+v, want %+v", decodedFromRaw, out.Result)
+	}
+
+	// Mutating a returned copy must not mutate internal RunOutput state.
+	origByte := raw1[0]
+	raw1[0] = 'X'
+	raw2 := out.StdoutCopy()
+	if raw2[0] != origByte {
+		t.Errorf("mutating StdoutCopy() affected internal buffer: got %q, want %q", raw2[0], origByte)
+	}
 }

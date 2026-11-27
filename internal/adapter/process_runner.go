@@ -50,6 +50,19 @@ type RunOutput struct {
 	StderrBytesSeen int64
 	ActualExitCode  int
 	ActualDuration  time.Duration
+	rawStdout       []byte
+}
+
+// StdoutCopy returns a defensive copy of the exact validated JSON bytes
+// captured from adapter stdout. Mutating the returned slice has no effect on
+// RunOutput's internal buffer.
+func (o *RunOutput) StdoutCopy() []byte {
+	if o == nil || len(o.rawStdout) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(o.rawStdout))
+	copy(cp, o.rawStdout)
+	return cp
 }
 
 // ProcessRunner executes allowlisted adapters in isolated per-run temporary
@@ -272,6 +285,9 @@ func (r *ProcessRunner) Run(ctx context.Context, params RunParams, verified *loc
 		return nil, err
 	}
 
+	rawStdoutCopy := make([]byte, len(stdoutBytes))
+	copy(rawStdoutCopy, stdoutBytes)
+
 	return &RunOutput{
 		Result:          res,
 		Stderr:          stderrBytes,
@@ -279,6 +295,7 @@ func (r *ProcessRunner) Run(ctx context.Context, params RunParams, verified *loc
 		StderrBytesSeen: stderrSeen,
 		ActualExitCode:  exitCode,
 		ActualDuration:  duration,
+		rawStdout:       rawStdoutCopy,
 	}, nil
 }
 

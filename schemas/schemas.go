@@ -21,3 +21,9 @@ var AdapterRequestSchemaJSON []byte
 //
 //go:embed adapter-result.schema.json
 var AdapterResultSchemaJSON []byte
+
+// EvidenceBundleSchemaJSON contains the canonical JSON Schema (Draft 2020-12)
+// for immutable evidence bundle manifest validation (schema version 1.0.0).
+//
+//go:embed evidence-bundle.schema.json
+var EvidenceBundleSchemaJSON []byte
