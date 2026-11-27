@@ -59,12 +59,28 @@ func TestDeriveOutcome(t *testing.T) {
 			wantOutcome: domain.RunOutcomeNotApplicable,
 		},
 		{
-			name: "pass and skipped yields pass",
+			name: "pass and skipped yields inconclusive",
 			results: []domain.AssertionResult{
 				{AssertionID: "a1", Status: domain.AssertionStatusPass},
 				{AssertionID: "a2", Status: domain.AssertionStatusSkipped},
 			},
-			wantOutcome: domain.RunOutcomePass,
+			wantOutcome: domain.RunOutcomeInconclusive,
+		},
+		{
+			name: "fail and skipped yields regression",
+			results: []domain.AssertionResult{
+				{AssertionID: "a1", Status: domain.AssertionStatusFail},
+				{AssertionID: "a2", Status: domain.AssertionStatusSkipped},
+			},
+			wantOutcome: domain.RunOutcomeRegression,
+		},
+		{
+			name: "inconclusive and skipped yields inconclusive",
+			results: []domain.AssertionResult{
+				{AssertionID: "a1", Status: domain.AssertionStatusInconclusive},
+				{AssertionID: "a2", Status: domain.AssertionStatusSkipped},
+			},
+			wantOutcome: domain.RunOutcomeInconclusive,
 		},
 		{
 			name: "invalid status returns error",
