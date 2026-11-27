@@ -8,14 +8,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/adapter"
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/adapter/goingest"
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/assertion"
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/corpus"
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/domain"
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/source/localfile"
 )
+
+var adapterSchemaInitOnce sync.Once
 
 // BuildInput supplies all trusted inputs required to build and persist an
 // immutable evidence bundle for a terminal replay run.
@@ -49,7 +55,8 @@ type pendingArtifact struct {
 // immutably under <evidenceRoot>/<run-id>/ using exclusive file creation, and
 // verifies the completed bundle before returning.
 func WriteBundle(evidenceRoot string, input BuildInput) (*WriteResult, error) {
-	if err := validateBuildInput(input); err != nil {
+	decodedResult, err := validateBuildInput(input)
+	if err != nil {
 		return nil, err
 	}
 
@@ -78,7 +85,7 @@ func WriteBundle(evidenceRoot string, input BuildInput) (*WriteResult, error) {
 		return nil, fmt.Errorf("check existing bundle %q: %w", runID, err)
 	}
 
-	pending, err := buildPendingArtifacts(input)
+	pending, err := buildPendingArtifacts(input, decodedResult)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +130,7 @@ func WriteBundle(evidenceRoot string, input BuildInput) (*WriteResult, error) {
 		})
 	}
 
-	manifest := buildManifest(input, artifactRefs)
+	manifest := buildManifest(input, decodedResult, artifactRefs)
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		_ = runRoot.Close()
@@ -164,191 +171,283 @@ func WriteBundle(evidenceRoot string, input BuildInput) (*WriteResult, error) {
 	}, nil
 }
 
-func validateBuildInput(input BuildInput) error {
+func validateBuildInput(input BuildInput) (*adapter.Result, error) {
 	if input.Case == nil {
-		return fmt.Errorf("%w: Case must not be nil", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: Case must not be nil", ErrInvalidBundleInput)
 	}
 	if input.Run == nil {
-		return fmt.Errorf("%w: Run must not be nil", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: Run must not be nil", ErrInvalidBundleInput)
 	}
 	if input.VerifiedInput == nil {
-		return fmt.Errorf("%w: VerifiedInput must not be nil", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: VerifiedInput must not be nil", ErrInvalidBundleInput)
 	}
 	if err := ValidateRunID(input.Run.RunID); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundleInput, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBundleInput, err)
 	}
 	if input.Run.CaseID != input.Case.CaseID {
-		return fmt.Errorf("%w: run.case_id %q does not match case.case_id %q",
+		return nil, fmt.Errorf("%w: run.case_id %q does not match case.case_id %q",
 			ErrInvalidBundleInput, input.Run.CaseID, input.Case.CaseID)
 	}
 	if input.Run.AdapterID != input.AdapterTarget.AdapterID {
-		return fmt.Errorf("%w: run.adapter_id %q does not match adapter target %q",
+		return nil, fmt.Errorf("%w: run.adapter_id %q does not match adapter target %q",
 			ErrInvalidBundleInput, input.Run.AdapterID, input.AdapterTarget.AdapterID)
 	}
 	if !input.Run.State.IsTerminal() {
-		return fmt.Errorf("%w: run.state %q is not terminal", ErrInvalidBundleInput, input.Run.State)
+		return nil, fmt.Errorf("%w: run.state %q is not terminal", ErrInvalidBundleInput, input.Run.State)
 	}
 	if input.Run.StartedAt.IsZero() {
-		return fmt.Errorf("%w: run.started_at must not be zero", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: run.started_at must not be zero", ErrInvalidBundleInput)
 	}
 	if input.Run.CompletedAt == nil || input.Run.CompletedAt.IsZero() {
-		return fmt.Errorf("%w: terminal run must have completed_at", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: terminal run must have completed_at", ErrInvalidBundleInput)
 	}
 	if input.Run.CompletedAt.Before(input.Run.StartedAt) {
-		return fmt.Errorf("%w: run.completed_at precedes run.started_at", ErrInvalidBundleInput)
-	}
-
-	if input.Run.State == domain.RunStateCompleted {
-		if input.Run.Outcome == nil || !input.Run.Outcome.IsValid() {
-			return fmt.Errorf("%w: completed run must have a valid conformance outcome", ErrInvalidBundleInput)
-		}
-		if len(input.Case.Expectations) == 0 {
-			return fmt.Errorf("%w: completed run requires non-empty case expectations", ErrInvalidBundleInput)
-		}
-		if err := validateCompletedAssertions(input.Case.Expectations, input.Assertions, *input.Run.Outcome); err != nil {
-			return err
-		}
-		if input.AdapterOutput == nil || input.AdapterOutput.Result == nil {
-			return fmt.Errorf("%w: completed run requires non-nil adapter output and result", ErrInvalidBundleInput)
-		}
-		if len(input.AdapterOutput.StdoutCopy()) == 0 {
-			return fmt.Errorf("%w: completed run requires non-empty raw adapter stdout", ErrInvalidBundleInput)
-		}
-		if input.AdapterOutput.Result.Execution.Status != adapter.ExecutionStatusCompleted {
-			return fmt.Errorf("%w: completed run requires adapter execution status %q, got %q",
-				ErrInvalidBundleInput, adapter.ExecutionStatusCompleted, input.AdapterOutput.Result.Execution.Status)
-		}
-		if input.AdapterOutput.ActualExitCode != 0 {
-			return fmt.Errorf("%w: completed run requires host-observed exit code 0, got %d",
-				ErrInvalidBundleInput, input.AdapterOutput.ActualExitCode)
-		}
-	} else if input.Run.Outcome != nil {
-		return fmt.Errorf("%w: non-completed run (state=%s) must not have a fabricated outcome",
-			ErrInvalidBundleInput, input.Run.State)
+		return nil, fmt.Errorf("%w: run.completed_at precedes run.started_at", ErrInvalidBundleInput)
 	}
 
 	if strings.TrimSpace(input.Worker.Version) == "" {
-		return fmt.Errorf("%w: worker.version must not be empty", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: worker.version must not be empty", ErrInvalidBundleInput)
 	}
 	if strings.TrimSpace(input.AdapterTarget.AdapterID) == "" ||
 		strings.TrimSpace(input.AdapterTarget.AdapterVersion) == "" ||
 		strings.TrimSpace(input.AdapterTarget.SDKVersion) == "" {
-		return fmt.Errorf("%w: adapter target metadata must be non-empty", ErrInvalidBundleInput)
+		return nil, fmt.Errorf("%w: adapter target metadata must be non-empty", ErrInvalidBundleInput)
 	}
 
 	// Cross-check VerifiedInput against corpus Case metadata.
 	if err := corpus.ValidateObjectPath(input.Case.Input.ObjectPath); err != nil {
-		return fmt.Errorf("%w: invalid case input.object_path: %v", ErrInvalidBundleInput, err)
+		return nil, fmt.Errorf("%w: invalid case input.object_path: %v", ErrInvalidBundleInput, err)
 	}
 	if input.VerifiedInput.ObjectPath() != input.Case.Input.ObjectPath {
-		return fmt.Errorf("%w: verified input object_path %q does not match case %q",
+		return nil, fmt.Errorf("%w: verified input object_path %q does not match case %q",
 			ErrInvalidBundleInput, input.VerifiedInput.ObjectPath(), input.Case.Input.ObjectPath)
 	}
 	if input.VerifiedInput.ByteLength() != input.Case.Input.ByteLength {
-		return fmt.Errorf("%w: verified input byte length %d does not match case %d",
+		return nil, fmt.Errorf("%w: verified input byte length %d does not match case %d",
 			ErrInvalidBundleInput, input.VerifiedInput.ByteLength(), input.Case.Input.ByteLength)
 	}
 	if input.VerifiedInput.SHA256() != input.Case.Input.SHA256 {
-		return fmt.Errorf("%w: verified input SHA-256 %s does not match case %s",
+		return nil, fmt.Errorf("%w: verified input SHA-256 %s does not match case %s",
 			ErrInvalidBundleInput, input.VerifiedInput.SHA256(), input.Case.Input.SHA256)
 	}
 
+	var decodedResult *adapter.Result
 	if input.AdapterOutput != nil {
-		if input.AdapterOutput.Result == nil {
-			return fmt.Errorf("%w: adapter output Result must not be nil", ErrInvalidBundleInput)
+		var err error
+		decodedResult, err = validateAdapterOutputAgainstStdout(input.AdapterOutput)
+		if err != nil {
+			return nil, err
 		}
-		res := input.AdapterOutput.Result
-		if res.Execution.ExitCode != input.AdapterOutput.ActualExitCode {
-			return fmt.Errorf("%w: adapter result exit_code %d does not match host-observed exit code %d",
-				ErrInvalidBundleInput, res.Execution.ExitCode, input.AdapterOutput.ActualExitCode)
+		if decodedResult.Execution.ExitCode != input.AdapterOutput.ActualExitCode {
+			return nil, fmt.Errorf("%w: adapter result exit_code %d does not match host-observed exit code %d",
+				ErrInvalidBundleInput, decodedResult.Execution.ExitCode, input.AdapterOutput.ActualExitCode)
 		}
-		if res.RunID != input.Run.RunID {
-			return fmt.Errorf("%w: adapter result run_id %q does not match run %q",
-				ErrInvalidBundleInput, res.RunID, input.Run.RunID)
+		if decodedResult.RunID != input.Run.RunID {
+			return nil, fmt.Errorf("%w: adapter result run_id %q does not match run %q",
+				ErrInvalidBundleInput, decodedResult.RunID, input.Run.RunID)
 		}
-		if res.CaseID != input.Case.CaseID {
-			return fmt.Errorf("%w: adapter result case_id %q does not match case %q",
-				ErrInvalidBundleInput, res.CaseID, input.Case.CaseID)
+		if decodedResult.CaseID != input.Case.CaseID {
+			return nil, fmt.Errorf("%w: adapter result case_id %q does not match case %q",
+				ErrInvalidBundleInput, decodedResult.CaseID, input.Case.CaseID)
 		}
-		if res.AdapterID != input.AdapterTarget.AdapterID ||
-			res.AdapterVersion != input.AdapterTarget.AdapterVersion ||
-			res.SDKVersion != input.AdapterTarget.SDKVersion {
-			return fmt.Errorf("%w: adapter result identity does not match target", ErrInvalidBundleInput)
+		if decodedResult.AdapterID != input.AdapterTarget.AdapterID ||
+			decodedResult.AdapterVersion != input.AdapterTarget.AdapterVersion ||
+			decodedResult.SDKVersion != input.AdapterTarget.SDKVersion {
+			return nil, fmt.Errorf("%w: adapter result identity does not match target", ErrInvalidBundleInput)
 		}
-		if res.Input.SHA256 != input.VerifiedInput.SHA256() {
-			return fmt.Errorf("%w: adapter result input.sha256 %s does not match verified input %s",
-				ErrInvalidBundleInput, res.Input.SHA256, input.VerifiedInput.SHA256())
-		}
-	}
-
-	seenAssertionIDs := make(map[string]struct{}, len(input.Assertions))
-	for i, a := range input.Assertions {
-		if strings.TrimSpace(a.AssertionID) == "" {
-			return fmt.Errorf("%w: assertion[%d] has empty assertion_id", ErrInvalidBundleInput, i)
-		}
-		if _, dup := seenAssertionIDs[a.AssertionID]; dup {
-			return fmt.Errorf("%w: duplicate assertion_id %q", ErrInvalidBundleInput, a.AssertionID)
-		}
-		seenAssertionIDs[a.AssertionID] = struct{}{}
-		if err := a.Kind.Validate(); err != nil {
-			return fmt.Errorf("%w: assertion %q: %v", ErrInvalidBundleInput, a.AssertionID, err)
-		}
-		if err := a.Status.Validate(); err != nil {
-			return fmt.Errorf("%w: assertion %q: %v", ErrInvalidBundleInput, a.AssertionID, err)
+		if decodedResult.Input.SHA256 != input.VerifiedInput.SHA256() {
+			return nil, fmt.Errorf("%w: adapter result input.sha256 %s does not match verified input %s",
+				ErrInvalidBundleInput, decodedResult.Input.SHA256, input.VerifiedInput.SHA256())
 		}
 	}
 
-	return nil
+	if input.Run.State == domain.RunStateCompleted {
+		if input.Run.Outcome == nil || !input.Run.Outcome.IsValid() {
+			return nil, fmt.Errorf("%w: completed run must have a valid conformance outcome", ErrInvalidBundleInput)
+		}
+		if len(input.Case.Expectations) == 0 {
+			return nil, fmt.Errorf("%w: completed run requires non-empty case expectations", ErrInvalidBundleInput)
+		}
+		if decodedResult == nil {
+			return nil, fmt.Errorf("%w: completed run requires non-nil adapter output and result", ErrInvalidBundleInput)
+		}
+		if decodedResult.Execution.Status != adapter.ExecutionStatusCompleted {
+			return nil, fmt.Errorf("%w: completed run requires adapter execution status %q, got %q",
+				ErrInvalidBundleInput, adapter.ExecutionStatusCompleted, decodedResult.Execution.Status)
+		}
+		if input.AdapterOutput.ActualExitCode != 0 {
+			return nil, fmt.Errorf("%w: completed run requires host-observed exit code 0, got %d",
+				ErrInvalidBundleInput, input.AdapterOutput.ActualExitCode)
+		}
+		if err := recalculateAndVerifyCompletedAssertions(input, decodedResult); err != nil {
+			return nil, err
+		}
+	} else {
+		if input.Run.Outcome != nil {
+			return nil, fmt.Errorf("%w: non-completed run (state=%s) must not have a fabricated outcome",
+				ErrInvalidBundleInput, input.Run.State)
+		}
+		seenAssertionIDs := make(map[string]struct{}, len(input.Assertions))
+		for i, a := range input.Assertions {
+			if strings.TrimSpace(a.AssertionID) == "" {
+				return nil, fmt.Errorf("%w: assertion[%d] has empty assertion_id", ErrInvalidBundleInput, i)
+			}
+			if _, dup := seenAssertionIDs[a.AssertionID]; dup {
+				return nil, fmt.Errorf("%w: duplicate assertion_id %q", ErrInvalidBundleInput, a.AssertionID)
+			}
+			seenAssertionIDs[a.AssertionID] = struct{}{}
+			if err := a.Kind.Validate(); err != nil {
+				return nil, fmt.Errorf("%w: assertion %q: %v", ErrInvalidBundleInput, a.AssertionID, err)
+			}
+			if err := a.Status.Validate(); err != nil {
+				return nil, fmt.Errorf("%w: assertion %q: %v", ErrInvalidBundleInput, a.AssertionID, err)
+			}
+		}
+	}
+
+	return decodedResult, nil
 }
 
-func validateCompletedAssertions(expectations []domain.AssertionExpectation, results []domain.AssertionResult, declaredOutcome domain.RunOutcome) error {
-	if len(results) == 0 {
+func validateAdapterOutputAgainstStdout(out *adapter.RunOutput) (*adapter.Result, error) {
+	if out.Result == nil {
+		return nil, fmt.Errorf("%w: adapter output Result must not be nil", ErrInvalidBundleInput)
+	}
+	stdoutBytes := out.StdoutCopy()
+	if len(bytes.TrimSpace(stdoutBytes)) == 0 {
+		return nil, fmt.Errorf("%w: adapter output requires non-empty raw stdout bytes", ErrInvalidBundleInput)
+	}
+
+	adapterSchemaInitOnce.Do(adapter.Init)
+
+	decoded, err := adapter.DecodeResult(stdoutBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: raw adapter stdout failed strict decode: %v", ErrInvalidBundleInput, err)
+	}
+	if err := adapter.SchemaValidateResult(stdoutBytes); err != nil {
+		return nil, fmt.Errorf("%w: raw adapter stdout failed schema validation: %v", ErrInvalidBundleInput, err)
+	}
+	if err := adapter.ValidateResult(decoded); err != nil {
+		return nil, fmt.Errorf("%w: raw adapter stdout failed protocol validation: %v", ErrInvalidBundleInput, err)
+	}
+	if !reflect.DeepEqual(decoded, out.Result) {
+		return nil, fmt.Errorf("%w: AdapterOutput.Result does not match decoded raw stdout bytes", ErrInvalidBundleInput)
+	}
+	return decoded, nil
+}
+
+func recalculateAndVerifyCompletedAssertions(input BuildInput, decodedResult *adapter.Result) error {
+	if len(input.Assertions) == 0 {
 		return fmt.Errorf("%w: completed run requires non-empty assertion results", ErrInvalidBundleInput)
 	}
-	if len(results) != len(expectations) {
+	if len(input.Assertions) != len(input.Case.Expectations) {
 		return fmt.Errorf("%w: completed run has %d assertion results, expected %d matching case expectations",
-			ErrInvalidBundleInput, len(results), len(expectations))
+			ErrInvalidBundleInput, len(input.Assertions), len(input.Case.Expectations))
 	}
 
-	seen := make(map[string]struct{}, len(results))
-	for i := range expectations {
-		exp := &expectations[i]
-		res := &results[i]
-		if res.AssertionID != exp.AssertionID {
-			return fmt.Errorf("%w: assertion[%d] ID %q does not match expected %q",
-				ErrInvalidBundleInput, i, res.AssertionID, exp.AssertionID)
-		}
-		if _, dup := seen[res.AssertionID]; dup {
-			return fmt.Errorf("%w: duplicate assertion_id %q", ErrInvalidBundleInput, res.AssertionID)
-		}
-		seen[res.AssertionID] = struct{}{}
+	// Fail closed for unknown adapter IDs until a persistent capability registry is implemented.
+	if input.AdapterTarget.AdapterID != adapter.AdapterIDGoIngest {
+		return fmt.Errorf("%w: unsupported adapter ID %q for Unit 7 assertion recalculation",
+			ErrInvalidBundleInput, input.AdapterTarget.AdapterID)
+	}
 
-		if res.Kind != exp.Kind {
-			return fmt.Errorf("%w: assertion %q kind %q does not match expected %q",
-				ErrInvalidBundleInput, res.AssertionID, res.Kind, exp.Kind)
+	var proj *domain.SemanticProjection
+	if decodedResult.SemanticProjection != nil {
+		var gp goingest.SemanticProjection
+		dec := json.NewDecoder(bytes.NewReader(*decodedResult.SemanticProjection))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&gp); err != nil {
+			return fmt.Errorf("%w: decode go-ingest semantic_projection: %v", ErrInvalidBundleInput, err)
 		}
-		if err := compareExactExpected(exp.Kind, exp.Expected, res.Expected); err != nil {
-			return fmt.Errorf("%w: assertion %q expected value mismatch: %v",
-				ErrInvalidBundleInput, res.AssertionID, err)
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			return fmt.Errorf("%w: trailing JSON in go-ingest semantic_projection", ErrInvalidBundleInput)
 		}
-		if err := res.Status.Validate(); err != nil {
-			return fmt.Errorf("%w: assertion %q invalid status: %v",
-				ErrInvalidBundleInput, res.AssertionID, err)
+		var err error
+		proj, err = assertion.ProjectionFromGoIngest(&gp)
+		if err != nil {
+			return fmt.Errorf("%w: map go-ingest semantic_projection: %v", ErrInvalidBundleInput, err)
 		}
 	}
 
-	derivedOutcome, err := domain.DeriveOutcome(results)
+	var evidenceRefs []string
+	if len(input.Assertions[0].EvidenceRefs) > 0 {
+		evidenceRefs = make([]string, len(input.Assertions[0].EvidenceRefs))
+		copy(evidenceRefs, input.Assertions[0].EvidenceRefs)
+	}
+
+	eval, err := assertion.Evaluate(input.Case.Expectations, assertion.EvaluationInput{
+		Projection:          proj,
+		VerifiedInputSHA256: input.VerifiedInput.SHA256(),
+		SupportedKinds:      assertion.GoIngestSupportedKinds(),
+		EvidenceRefs:        evidenceRefs,
+	})
 	if err != nil {
-		return fmt.Errorf("%w: derive outcome from assertions: %v", ErrInvalidBundleInput, err)
+		return fmt.Errorf("%w: recalculate assertions via Unit 6: %v", ErrInvalidBundleInput, err)
 	}
-	if derivedOutcome != declaredOutcome {
-		return fmt.Errorf("%w: declared run outcome %q disagrees with derived outcome %q",
-			ErrInvalidBundleInput, declaredOutcome, derivedOutcome)
+
+	if eval.Outcome != *input.Run.Outcome {
+		return fmt.Errorf("%w: declared run outcome %q disagrees with recalculated outcome %q",
+			ErrInvalidBundleInput, *input.Run.Outcome, eval.Outcome)
+	}
+
+	for i := range eval.Results {
+		recalc := &eval.Results[i]
+		supplied := &input.Assertions[i]
+		if supplied.AssertionID != recalc.AssertionID {
+			return fmt.Errorf("%w: assertion[%d] ID %q does not match expected %q",
+				ErrInvalidBundleInput, i, supplied.AssertionID, recalc.AssertionID)
+		}
+		if supplied.Kind != recalc.Kind {
+			return fmt.Errorf("%w: assertion %q kind %q does not match expected %q",
+				ErrInvalidBundleInput, supplied.AssertionID, supplied.Kind, recalc.Kind)
+		}
+		if err := compareExactValue(recalc.Kind, recalc.Expected, supplied.Expected); err != nil {
+			return fmt.Errorf("%w: assertion %q expected value mismatch: %v",
+				ErrInvalidBundleInput, supplied.AssertionID, err)
+		}
+		if err := compareObservedValue(recalc.Observed, supplied.Observed); err != nil {
+			return fmt.Errorf("%w: assertion %q observed value mismatch: %v",
+				ErrInvalidBundleInput, supplied.AssertionID, err)
+		}
+		if supplied.Status != recalc.Status {
+			return fmt.Errorf("%w: assertion %q status %q does not match recalculated %q",
+				ErrInvalidBundleInput, supplied.AssertionID, supplied.Status, recalc.Status)
+		}
+		if supplied.Explanation != recalc.Explanation {
+			return fmt.Errorf("%w: assertion %q explanation mismatch", ErrInvalidBundleInput, supplied.AssertionID)
+		}
+		if !reflect.DeepEqual(supplied.EvidenceRefs, recalc.EvidenceRefs) {
+			return fmt.Errorf("%w: assertion %q evidence_refs mismatch", ErrInvalidBundleInput, supplied.AssertionID)
+		}
+	}
+
+	return nil
+}
+
+func compareObservedValue(recalc, supplied any) error {
+	if recalc == nil && supplied == nil {
+		return nil
+	}
+	if recalc == nil || supplied == nil {
+		return fmt.Errorf("recalculated=%v supplied=%v", recalc, supplied)
+	}
+	if rInt, err1 := domain.ParseExactInteger(recalc); err1 == nil {
+		sInt, err2 := domain.ParseExactInteger(supplied)
+		if err2 != nil {
+			return fmt.Errorf("expected exact integer matching %d, got %T (%v)", rInt, supplied, supplied)
+		}
+		if rInt != sInt {
+			return fmt.Errorf("supplied %d != recalculated %d", sInt, rInt)
+		}
+		return nil
+	}
+	if !reflect.DeepEqual(recalc, supplied) {
+		return fmt.Errorf("supplied %v != recalculated %v", supplied, recalc)
 	}
 	return nil
 }
 
-func compareExactExpected(kind domain.AssertionKind, expVal, resVal any) error {
+func compareExactValue(kind domain.AssertionKind, expVal, resVal any) error {
 	switch kind {
 	case domain.AssertionKindLedgerSequenceEquals, domain.AssertionKindTransactionCountEquals:
 		eInt, err := domain.ParseExactInteger(expVal)
@@ -378,7 +477,7 @@ func compareExactExpected(kind domain.AssertionKind, expVal, resVal any) error {
 	}
 }
 
-func buildPendingArtifacts(input BuildInput) ([]pendingArtifact, error) {
+func buildPendingArtifacts(input BuildInput, decodedResult *adapter.Result) ([]pendingArtifact, error) {
 	var artifacts []pendingArtifact
 
 	if input.AdapterOutput != nil {
@@ -392,8 +491,8 @@ func buildPendingArtifacts(input BuildInput) ([]pendingArtifact, error) {
 			})
 		}
 
-		if input.AdapterOutput.Result != nil && input.AdapterOutput.Result.SemanticProjection != nil {
-			projRaw := *input.AdapterOutput.Result.SemanticProjection
+		if decodedResult != nil && decodedResult.SemanticProjection != nil {
+			projRaw := *decodedResult.SemanticProjection
 			if err := validateJSONObjectBytes(projRaw); err != nil {
 				return nil, fmt.Errorf("%w: semantic_projection is not a valid JSON object: %v", ErrInvalidBundleInput, err)
 			}
@@ -442,7 +541,7 @@ func validateJSONObjectBytes(data []byte) error {
 	return nil
 }
 
-func buildManifest(input BuildInput, artifactRefs []ArtifactRef) *Manifest {
+func buildManifest(input BuildInput, decodedResult *adapter.Result, artifactRefs []ArtifactRef) *Manifest {
 	var retrievedAtStr *string
 	if input.Case.Source.RetrievedAt != nil {
 		s := input.Case.Source.RetrievedAt.UTC().Format(time.RFC3339)
@@ -473,21 +572,20 @@ func buildManifest(input BuildInput, artifactRefs []ArtifactRef) *Manifest {
 		hostExitCode = &hec
 		hostDurationMs = &hdur
 
-		if input.AdapterOutput.Result != nil {
-			res := input.AdapterOutput.Result
-			if res.Decode.DetectedType != nil {
-				dt := *res.Decode.DetectedType
+		if decodedResult != nil {
+			if decodedResult.Decode.DetectedType != nil {
+				dt := *decodedResult.Decode.DetectedType
 				detectedType = &dt
 			}
-			st := res.Execution.Status
-			ec := res.Execution.ExitCode
-			dur := res.Execution.DurationMs
+			st := decodedResult.Execution.Status
+			ec := decodedResult.Execution.ExitCode
+			dur := decodedResult.Execution.DurationMs
 			adapterStatus = &st
 			adapterExitCode = &ec
 			adapterDurationMs = &dur
 
-			adapterDiags = make([]adapter.ResultDiagnostic, len(res.Diagnostics))
-			copy(adapterDiags, res.Diagnostics)
+			adapterDiags = make([]adapter.ResultDiagnostic, len(decodedResult.Diagnostics))
+			copy(adapterDiags, decodedResult.Diagnostics)
 		}
 	}
 	if adapterDiags == nil {

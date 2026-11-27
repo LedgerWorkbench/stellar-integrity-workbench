@@ -338,23 +338,291 @@ func TestWriteAndVerifyBundle_CompletedPassAndRegression(t *testing.T) {
 		}
 	})
 
-	t.Run("completed_without_semantic_projection_allowed_when_unavailable", func(t *testing.T) {
-		in := makeCompletedBuildInput(t, "run_unit7_no_proj", 100, start, end)
-		// Simulate adapter returning null semantic_projection while still having valid assertions (e.g. input_hash_equals)
-		in.Case.Expectations = []domain.AssertionExpectation{
-			{AssertionID: "assertion_sha", Kind: domain.AssertionKindInputHashEquals, Expected: in.VerifiedInput.SHA256()},
+	t.Run("exact_uint32_4294967295_evaluated_and_verified", func(t *testing.T) {
+		xdrBytes := makeSyntheticLedgerXDR(t, 4294967295, 21)
+		vi, hashHex, byteLen := makeSyntheticVerifiedInput(t, xdrBytes)
+		expectations := []domain.AssertionExpectation{
+			{AssertionID: "assertion_seq_max", Kind: domain.AssertionKindLedgerSequenceEquals, Expected: json.Number("4294967295")},
+			{AssertionID: "assertion_sha_max", Kind: domain.AssertionKindInputHashEquals, Expected: hashHex},
 		}
-		in.Assertions = []domain.AssertionResult{in.Assertions[1]}
-		pass := domain.RunOutcomePass
-		in.Run.Outcome = &pass
-		in.AdapterOutput.Result.SemanticProjection = nil
+		c := makeSyntheticCase(hashHex, byteLen, 4294967295, expectations)
+		out := runRealGoIngest(t, "run_unit7_max_u32", c.CaseID, vi)
 
-		wr, err := evidence.WriteBundle(evRoot, in)
+		var gp goingest.SemanticProjection
+		if err := json.Unmarshal(*out.Result.SemanticProjection, &gp); err != nil {
+			t.Fatalf("unmarshal SemanticProjection: %v", err)
+		}
+		dp, err := assertion.ProjectionFromGoIngest(&gp)
 		if err != nil {
-			t.Fatalf("WriteBundle failed: %v", err)
+			t.Fatalf("ProjectionFromGoIngest: %v", err)
+		}
+		eval, err := assertion.Evaluate(expectations, assertion.EvaluationInput{
+			Projection:          dp,
+			VerifiedInputSHA256: hashHex,
+			SupportedKinds:      assertion.GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("assertion.Evaluate: %v", err)
+		}
+		outcome := eval.Outcome
+		wr, err := evidence.WriteBundle(evRoot, evidence.BuildInput{
+			Case:          c,
+			Run:           &domain.Run{RunID: "run_unit7_max_u32", CaseID: c.CaseID, AdapterID: adapter.AdapterIDGoIngest, State: domain.RunStateCompleted, Outcome: &outcome, StartedAt: start, CompletedAt: &end},
+			VerifiedInput: vi,
+			AdapterTarget: adapter.RequestTarget{AdapterID: adapter.AdapterIDGoIngest, AdapterVersion: adapter.DefaultGoAdapterVersion, SDKVersion: adapter.PinnedGoSDKVersion},
+			AdapterOutput: out,
+			Assertions:    eval.Results,
+			Worker:        evidence.WorkerMetadata{Version: "0.1.0-test", CommitSHA: nil},
+		})
+		if err != nil {
+			t.Fatalf("WriteBundle: %v", err)
+		}
+		if *wr.Manifest.Run.Outcome != domain.RunOutcomePass {
+			t.Errorf("Outcome = %s, want pass", *wr.Manifest.Run.Outcome)
+		}
+	})
+}
+
+func buildCustomTestAdapterBinary(t *testing.T, sleepMs int, reportedDurationMs int64, nullProjection bool) string {
+	t.Helper()
+	srcDir := t.TempDir()
+	src := fmt.Sprintf(`package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"time"
+)
+
+func main() {
+	reqBytes, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		os.Exit(4)
+	}
+	var req struct {
+		RunID       string `+"`json:\"run_id\"`"+`
+		CaseID      string `+"`json:\"case_id\"`"+`
+		InputSHA256 string `+"`json:\"input_sha256\"`"+`
+		Target      struct {
+			AdapterID      string `+"`json:\"adapter_id\"`"+`
+			AdapterVersion string `+"`json:\"adapter_version\"`"+`
+			SDKVersion     string `+"`json:\"sdk_version\"`"+`
+		} `+"`json:\"target\"`"+`
+	}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		os.Exit(4)
+	}
+	time.Sleep(%d * time.Millisecond)
+
+	var proj any = nil
+	if !%t {
+		proj = map[string]any{
+			"projection_version": "1",
+			"xdr_type":           "LedgerCloseMeta",
+			"outer_variant":      1,
+			"ledger": map[string]any{
+				"sequence":             100,
+				"protocol_version":     21,
+				"close_time_unix":      1700000100,
+				"ledger_hash":          "1100000000000000000000000000000000000000000000000000000000000000",
+				"previous_ledger_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+			},
+			"transactions": map[string]any{
+				"total":            0,
+				"successful":       0,
+				"failed":           0,
+				"hashes":           []string{},
+				"hashes_truncated": false,
+			},
+		}
+	}
+
+	res := map[string]any{
+		"schema_version":  "1",
+		"run_id":          req.RunID,
+		"case_id":         req.CaseID,
+		"adapter_id":      req.Target.AdapterID,
+		"adapter_version": req.Target.AdapterVersion,
+		"sdk_version":     req.Target.SDKVersion,
+		"execution": map[string]any{
+			"status":      "completed",
+			"exit_code":   0,
+			"duration_ms": %d,
+		},
+		"input": map[string]any{
+			"sha256": req.InputSHA256,
+		},
+		"decode": map[string]any{
+			"status":        "success",
+			"detected_type": "LedgerCloseMeta",
+		},
+		"semantic_projection": proj,
+		"diagnostics":         []any{},
+		"capabilities_used":   []string{"decode_ledger_meta"},
+	}
+	b, _ := json.Marshal(res)
+	fmt.Printf("%%s\n", b)
+}
+`, sleepMs, nullProjection, reportedDurationMs)
+
+	mainPath := filepath.Join(srcDir, "main.go")
+	if err := os.WriteFile(mainPath, []byte(src), 0o600); err != nil {
+		t.Fatalf("write test adapter source: %v", err)
+	}
+	binName := "test-custom-adapter"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	binPath := filepath.Join(srcDir, binName)
+	cmd := exec.Command("go", "build", "-o", binPath, mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build custom test adapter: %v\n%s", err, string(out))
+	}
+	return binPath
+}
+
+func runCustomAdapter(t *testing.T, binPath, runID, caseID string, vi *localfile.VerifiedInput) *adapter.RunOutput {
+	t.Helper()
+	reg, err := adapter.NewProductionRegistry(adapter.ProductionRegistryConfig{
+		GoIngestBinaryPath: binPath,
+		GoIngestVersion:    adapter.DefaultGoAdapterVersion,
+		GoSDKVersion:       adapter.PinnedGoSDKVersion,
+	})
+	if err != nil {
+		t.Fatalf("NewProductionRegistry: %v", err)
+	}
+	runner, err := adapter.NewProcessRunner(adapter.ProcessRunnerConfig{Registry: reg})
+	if err != nil {
+		t.Fatalf("NewProcessRunner: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := runner.Run(ctx, adapter.RunParams{
+		RunID:       runID,
+		CaseID:      caseID,
+		Operation:   adapter.OperationDecodeLedgerMeta,
+		InputFormat: adapter.InputFormatLedgerCloseMeta,
+		Target:      adapter.RequestTarget{AdapterID: adapter.AdapterIDGoIngest, AdapterVersion: adapter.DefaultGoAdapterVersion, SDKVersion: adapter.PinnedGoSDKVersion},
+		Limits:      adapter.RequestLimits{TimeoutMs: 10000, MaxInputBytes: 1024 * 1024, MaxOutputBytes: 1024 * 1024},
+	}, vi)
+	if err != nil {
+		t.Fatalf("runner.Run: %v", err)
+	}
+	return out
+}
+
+func TestWriteBundle_GenuineNullProjectionAndDuration(t *testing.T) {
+	evRoot := t.TempDir()
+	start := time.Date(2026, 11, 27, 8, 8, 0, 0, time.UTC)
+	end := start.Add(time.Second)
+
+	t.Run("genuine_null_projection_input_hash_passes_and_seq_inconclusive", func(t *testing.T) {
+		bin := buildCustomTestAdapterBinary(t, 0, 5, true)
+		vi, hashHex, byteLen := makeSyntheticVerifiedInput(t, []byte("synthetic-null-proj"))
+		expectations := []domain.AssertionExpectation{
+			{AssertionID: "assertion_sha", Kind: domain.AssertionKindInputHashEquals, Expected: hashHex},
+		}
+		c := makeSyntheticCase(hashHex, byteLen, 100, expectations)
+		out := runCustomAdapter(t, bin, "run_null_proj_pass", c.CaseID, vi)
+
+		eval, err := assertion.Evaluate(expectations, assertion.EvaluationInput{
+			Projection:          nil,
+			VerifiedInputSHA256: hashHex,
+			SupportedKinds:      assertion.GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("assertion.Evaluate: %v", err)
+		}
+		outcome := eval.Outcome
+		wr, err := evidence.WriteBundle(evRoot, evidence.BuildInput{
+			Case:          c,
+			Run:           &domain.Run{RunID: "run_null_proj_pass", CaseID: c.CaseID, AdapterID: adapter.AdapterIDGoIngest, State: domain.RunStateCompleted, Outcome: &outcome, StartedAt: start, CompletedAt: &end},
+			VerifiedInput: vi,
+			AdapterTarget: adapter.RequestTarget{AdapterID: adapter.AdapterIDGoIngest, AdapterVersion: adapter.DefaultGoAdapterVersion, SDKVersion: adapter.PinnedGoSDKVersion},
+			AdapterOutput: out,
+			Assertions:    eval.Results,
+			Worker:        evidence.WorkerMetadata{Version: "0.1.0-test", CommitSHA: nil},
+		})
+		if err != nil {
+			t.Fatalf("WriteBundle: %v", err)
 		}
 		if wr.Verification.ArtifactCount != 2 {
 			t.Errorf("ArtifactCount = %d, want 2 (adapter-stdout + assertions)", wr.Verification.ArtifactCount)
+		}
+
+		// Projection-dependent assertion against genuine null projection yields inconclusive.
+		exp2 := []domain.AssertionExpectation{
+			{AssertionID: "assertion_seq", Kind: domain.AssertionKindLedgerSequenceEquals, Expected: json.Number("100")},
+			{AssertionID: "assertion_sha", Kind: domain.AssertionKindInputHashEquals, Expected: hashHex},
+		}
+		c2 := makeSyntheticCase(hashHex, byteLen, 100, exp2)
+		out2 := runCustomAdapter(t, bin, "run_null_proj_inc", c2.CaseID, vi)
+		eval2, err := assertion.Evaluate(exp2, assertion.EvaluationInput{
+			Projection:          nil,
+			VerifiedInputSHA256: hashHex,
+			SupportedKinds:      assertion.GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("assertion.Evaluate 2: %v", err)
+		}
+		if eval2.Outcome != domain.RunOutcomeInconclusive {
+			t.Fatalf("expected inconclusive outcome, got %s", eval2.Outcome)
+		}
+		out2Outcome := eval2.Outcome
+		if _, err := evidence.WriteBundle(evRoot, evidence.BuildInput{
+			Case:          c2,
+			Run:           &domain.Run{RunID: "run_null_proj_inc", CaseID: c2.CaseID, AdapterID: adapter.AdapterIDGoIngest, State: domain.RunStateCompleted, Outcome: &out2Outcome, StartedAt: start, CompletedAt: &end},
+			VerifiedInput: vi,
+			AdapterTarget: adapter.RequestTarget{AdapterID: adapter.AdapterIDGoIngest, AdapterVersion: adapter.DefaultGoAdapterVersion, SDKVersion: adapter.PinnedGoSDKVersion},
+			AdapterOutput: out2,
+			Assertions:    eval2.Results,
+			Worker:        evidence.WorkerMetadata{Version: "0.1.0-test", CommitSHA: nil},
+		}); err != nil {
+			t.Fatalf("WriteBundle inconclusive: %v", err)
+		}
+	})
+
+	t.Run("authentic_host_vs_adapter_duration", func(t *testing.T) {
+		// Adapter sleeps 35ms and self-reports duration_ms = 9999 in its actual stdout.
+		bin := buildCustomTestAdapterBinary(t, 35, 9999, false)
+		vi, hashHex, byteLen := makeSyntheticVerifiedInput(t, []byte("synthetic-dur"))
+		expectations := []domain.AssertionExpectation{
+			{AssertionID: "assertion_sha", Kind: domain.AssertionKindInputHashEquals, Expected: hashHex},
+		}
+		c := makeSyntheticCase(hashHex, byteLen, 100, expectations)
+		out := runCustomAdapter(t, bin, "run_auth_dur", c.CaseID, vi)
+
+		var gp goingest.SemanticProjection
+		_ = json.Unmarshal(*out.Result.SemanticProjection, &gp)
+		dp, _ := assertion.ProjectionFromGoIngest(&gp)
+		eval, err := assertion.Evaluate(expectations, assertion.EvaluationInput{
+			Projection:          dp,
+			VerifiedInputSHA256: hashHex,
+			SupportedKinds:      assertion.GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		outcome := eval.Outcome
+		wr, err := evidence.WriteBundle(evRoot, evidence.BuildInput{
+			Case:          c,
+			Run:           &domain.Run{RunID: "run_auth_dur", CaseID: c.CaseID, AdapterID: adapter.AdapterIDGoIngest, State: domain.RunStateCompleted, Outcome: &outcome, StartedAt: start, CompletedAt: &end},
+			VerifiedInput: vi,
+			AdapterTarget: adapter.RequestTarget{AdapterID: adapter.AdapterIDGoIngest, AdapterVersion: adapter.DefaultGoAdapterVersion, SDKVersion: adapter.PinnedGoSDKVersion},
+			AdapterOutput: out,
+			Assertions:    eval.Results,
+			Worker:        evidence.WorkerMetadata{Version: "0.1.0-test", CommitSHA: nil},
+		})
+		if err != nil {
+			t.Fatalf("WriteBundle: %v", err)
+		}
+		if wr.Manifest.Run.AdapterDurationMs == nil || *wr.Manifest.Run.AdapterDurationMs != 9999 {
+			t.Errorf("AdapterDurationMs = %v, want 9999", wr.Manifest.Run.AdapterDurationMs)
+		}
+		if wr.Manifest.Run.HostDurationMs == nil || *wr.Manifest.Run.HostDurationMs < 30 || *wr.Manifest.Run.HostDurationMs == 9999 {
+			t.Errorf("HostDurationMs = %v, expected >= 30 and != 9999", wr.Manifest.Run.HostDurationMs)
 		}
 	})
 }
@@ -422,12 +690,55 @@ func TestWriteBundle_CompletedRunConsistencyRejections(t *testing.T) {
 		}
 	})
 
-	t.Run("exact_integer_comparison_max_uint32", func(t *testing.T) {
-		in := makeCompletedBuildInput(t, "run_exact_int", 100, start, end)
-		in.Case.Expectations[0].Expected = json.Number("4294967295")
-		in.Assertions[0].Expected = int64(4294967295)
-		if _, err := evidence.WriteBundle(evRoot, in); err != nil {
-			t.Fatalf("expected exact uint32 integer match to succeed, got %v", err)
+	t.Run("mutating_result_after_process_runner_rejected", func(t *testing.T) {
+		in1 := makeCompletedBuildInput(t, "run_mut_proj", 100, start, end)
+		tamperedProj := json.RawMessage(`{"tampered":true}`)
+		in1.AdapterOutput.Result.SemanticProjection = &tamperedProj
+		if _, err := evidence.WriteBundle(evRoot, in1); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput when Result.SemanticProjection mutated, got %v", err)
+		}
+
+		in2 := makeCompletedBuildInput(t, "run_mut_dur", 100, start, end)
+		in2.AdapterOutput.Result.Execution.DurationMs = 99999
+		if _, err := evidence.WriteBundle(evRoot, in2); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput when Result.Execution.DurationMs mutated, got %v", err)
+		}
+
+		in3 := makeCompletedBuildInput(t, "run_mut_diag", 100, start, end)
+		in3.AdapterOutput.Result.Diagnostics = []adapter.ResultDiagnostic{{Stage: "decode", Code: "tamper", Message: "tampered"}}
+		if _, err := evidence.WriteBundle(evRoot, in3); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput when Result.Diagnostics mutated, got %v", err)
+		}
+	})
+
+	t.Run("fabricated_observed_or_status_rejected_by_recalculation", func(t *testing.T) {
+		// Pass status with incorrect observed sequence
+		in1 := makeCompletedBuildInput(t, "run_fab_obs", 100, start, end)
+		in1.Assertions[0].Observed = int64(999)
+		if _, err := evidence.WriteBundle(evRoot, in1); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput for fabricated observed sequence, got %v", err)
+		}
+
+		// Pass status with omitted observed value
+		in2 := makeCompletedBuildInput(t, "run_omit_obs", 100, start, end)
+		in2.Assertions[0].Observed = nil
+		if _, err := evidence.WriteBundle(evRoot, in2); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput for omitted observed value, got %v", err)
+		}
+
+		// Inconsistent evidence_refs across results
+		in3 := makeCompletedBuildInput(t, "run_bad_refs", 100, start, end)
+		in3.Assertions[1].EvidenceRefs = []string{"logical://other/ref"}
+		if _, err := evidence.WriteBundle(evRoot, in3); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput for inconsistent evidence_refs, got %v", err)
+		}
+
+		// Unknown adapter ID fails closed
+		in4 := makeCompletedBuildInput(t, "run_unknown_adapter", 100, start, end)
+		in4.Run.AdapterID = "unknown-adapter"
+		in4.AdapterTarget.AdapterID = "unknown-adapter"
+		if _, err := evidence.WriteBundle(evRoot, in4); !errors.Is(err, evidence.ErrInvalidBundleInput) {
+			t.Errorf("expected ErrInvalidBundleInput for unknown adapter ID, got %v", err)
 		}
 	})
 
@@ -451,28 +762,6 @@ func TestWriteBundle_CompletedRunConsistencyRejections(t *testing.T) {
 			t.Errorf("expected ErrInvalidBundleInput for empty StdoutCopy(), got %v", err)
 		}
 	})
-}
-
-func TestWriteBundle_HostVsAdapterDuration(t *testing.T) {
-	evRoot := t.TempDir()
-	start := time.Date(2026, 11, 27, 8, 10, 0, 0, time.UTC)
-	end := start.Add(time.Second)
-	in := makeCompletedBuildInput(t, "run_duration_diff", 100, start, end)
-
-	// Force distinct adapter-reported duration vs host-measured duration.
-	in.AdapterOutput.Result.Execution.DurationMs = 7
-	in.AdapterOutput.ActualDuration = 250 * time.Millisecond
-
-	wr, err := evidence.WriteBundle(evRoot, in)
-	if err != nil {
-		t.Fatalf("WriteBundle: %v", err)
-	}
-	if wr.Manifest.Run.AdapterDurationMs == nil || *wr.Manifest.Run.AdapterDurationMs != 7 {
-		t.Errorf("AdapterDurationMs = %v, want 7", wr.Manifest.Run.AdapterDurationMs)
-	}
-	if wr.Manifest.Run.HostDurationMs == nil || *wr.Manifest.Run.HostDurationMs != 250 {
-		t.Errorf("HostDurationMs = %v, want 250", wr.Manifest.Run.HostDurationMs)
-	}
 }
 
 func TestWriteBundle_FailedAndCancelledRuns(t *testing.T) {
