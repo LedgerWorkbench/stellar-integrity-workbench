@@ -98,10 +98,54 @@ func extractLedgerCloseMeta(inputPath string, ledgerSeq uint32, outputPath strin
 		return 0, "", fmt.Errorf("marshal extracted LedgerCloseMeta: %w", err)
 	}
 
-	if err := os.WriteFile(outputPath, out.Bytes(), 0o400); err != nil {
-		return 0, "", fmt.Errorf("write output %q: %w", outputPath, err)
+	if err := writeExclusiveFile(outputPath, out.Bytes(), 0o400); err != nil {
+		return 0, "", err
 	}
 
 	sum := sha256.Sum256(out.Bytes())
 	return out.Len(), hex.EncodeToString(sum[:]), nil
+}
+
+// writeExclusiveFile creates outputPath exclusively (refusing existing files
+// and symlinks) with the given mode, writes all bytes, syncs, and closes the
+// file. If writing, syncing, or closing fails, the partially created file is
+// removed.
+func writeExclusiveFile(outputPath string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("output path %q already exists (refusing to overwrite): %w", outputPath, err)
+		}
+		return fmt.Errorf("create output %q: %w", outputPath, err)
+	}
+
+	cleanup := func(cause error) error {
+		if rmErr := os.Remove(outputPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("%w (also failed to remove partial output %q: %v)", cause, outputPath, rmErr)
+		}
+		return cause
+	}
+
+	written := 0
+	for written < len(data) {
+		n, wErr := f.Write(data[written:])
+		written += n
+		if wErr != nil {
+			_ = f.Close()
+			return cleanup(fmt.Errorf("write output %q: %w", outputPath, wErr))
+		}
+		if n == 0 {
+			_ = f.Close()
+			return cleanup(fmt.Errorf("write output %q: %w", outputPath, io.ErrShortWrite))
+		}
+	}
+
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return cleanup(fmt.Errorf("sync output %q: %w", outputPath, err))
+	}
+	if err := f.Close(); err != nil {
+		return cleanup(fmt.Errorf("close output %q: %w", outputPath, err))
+	}
+	return nil
 }

@@ -30,6 +30,7 @@ This document records the provenance, retrieval, reproducible extraction, Horizo
 
 3. **Extract individual `LedgerCloseMeta` using the repository helper (`tools/extract-ledger-meta/main.go`):**
    ```bash
+   rm -f lcm_65695102.xdr
    go run ./tools/extract-ledger-meta \
      --input FC159281--65695102.xdr \
      --ledger 65695102 \
@@ -37,7 +38,8 @@ This document records the provenance, retrieval, reproducible extraction, Horizo
    ```
    - Uses pinned `github.com/stellar/go-stellar-sdk v0.9.0`.
    - Decodes `FC159281--65695102.xdr` as `xdr.LedgerCloseMetaBatch` via `xdr.SafeUnmarshal`, extracts ledger `65695102` via `batch.GetLedger(65695102)`, and verifies `lcm.LedgerSequence() == 65695102`.
-   - **Serialization note:** The helper extracts and serializes the decoded `xdr.LedgerCloseMeta` value using `xdr.Marshal` (writing `lcm_65695102.xdr` with `0400` permissions); the output is a re-serialized `LedgerCloseMeta` XDR value rather than a direct byte slice from the compressed source object.
+   - **Exclusive output requirement:** The helper opens `--output` with `O_WRONLY|O_CREATE|O_EXCL` (`0400` permissions) and refuses to overwrite an existing file or follow a symlink, so the output path must not already exist (remove any previous `lcm_65695102.xdr` with `rm -f lcm_65695102.xdr` before repeating extraction).
+   - **Serialization note:** The helper extracts and serializes the decoded `xdr.LedgerCloseMeta` value using `xdr.Marshal`; the output is a re-serialized `LedgerCloseMeta` XDR value rather than a direct byte slice from the compressed source object.
 
 ## 3. Hashes and Sizes
 

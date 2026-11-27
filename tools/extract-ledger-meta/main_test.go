@@ -150,3 +150,84 @@ func TestRun_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestRun_RefusesExistingOutputFile(t *testing.T) {
+	dir := t.TempDir()
+	batchPath := filepath.Join(dir, "batch.xdr")
+	outPath := filepath.Join(dir, "existing.xdr")
+
+	if err := os.WriteFile(batchPath, makeSyntheticBatchBytes(t, 65695102), 0o600); err != nil {
+		t.Fatalf("write batch: %v", err)
+	}
+
+	originalContent := []byte("preserve-existing-content")
+	if err := os.WriteFile(outPath, originalContent, 0o640); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := run([]string{"--input", batchPath, "--ledger", "65695102", "--output", outPath}, &stdout)
+	if err == nil {
+		t.Fatal("expected error when output file already exists, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected clear 'already exists' error, got: %v", err)
+	}
+
+	gotContent, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		t.Fatalf("read existing output: %v", readErr)
+	}
+	if !bytes.Equal(gotContent, originalContent) {
+		t.Errorf("existing output was modified: got %q, want %q", gotContent, originalContent)
+	}
+
+	if runtime.GOOS != "windows" {
+		info, statErr := os.Stat(outPath)
+		if statErr != nil {
+			t.Fatalf("stat existing output: %v", statErr)
+		}
+		if perm := info.Mode().Perm(); perm != 0o640 {
+			t.Errorf("existing output permissions changed: got %o, want 0640", perm)
+		}
+	}
+}
+
+func TestRun_RefusesExistingOutputSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+
+	dir := t.TempDir()
+	batchPath := filepath.Join(dir, "batch.xdr")
+	targetPath := filepath.Join(dir, "target.xdr")
+	linkPath := filepath.Join(dir, "link.xdr")
+
+	if err := os.WriteFile(batchPath, makeSyntheticBatchBytes(t, 65695102), 0o600); err != nil {
+		t.Fatalf("write batch: %v", err)
+	}
+	targetContent := []byte("do-not-overwrite-target")
+	if err := os.WriteFile(targetPath, targetContent, 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := run([]string{"--input", batchPath, "--ledger", "65695102", "--output", linkPath}, &stdout)
+	if err == nil {
+		t.Fatal("expected error when output path is an existing symlink, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected clear 'already exists' error for symlink, got: %v", err)
+	}
+
+	gotTarget, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		t.Fatalf("read symlink target: %v", readErr)
+	}
+	if !bytes.Equal(gotTarget, targetContent) {
+		t.Errorf("symlink target was modified: got %q, want %q", gotTarget, targetContent)
+	}
+}
