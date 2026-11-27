@@ -250,53 +250,132 @@ func TestDecodeLedgerCloseMeta_InvalidInputs(t *testing.T) {
 	// Trailing bytes after valid LedgerCloseMeta
 	withTrailing := append(append([]byte(nil), validBytes...), 0x01, 0x02, 0x03, 0x04)
 
-	// Truncated XDR
+	// Truncated XDR (keep supported discriminant 1 from validBytes, truncate the body)
 	truncated := validBytes[:len(validBytes)/2]
 
-	// Random invalid bytes
+	// Random invalid bytes whose first 4 bytes form discriminant -66052,
+	// which is outside {0, 1, 2} and thus classified as unsupported variant.
 	randomBytes := []byte{0xff, 0xfe, 0xfd, 0xfc, 0x00, 0x11, 0x22, 0x33}
 
+	t.Run("empty", func(t *testing.T) {
+		_, err := DecodeLedgerCloseMeta(nil)
+		if err == nil {
+			t.Fatal("expected error for empty input, got nil")
+		}
+		if !errors.Is(err, ErrXDRDecodeFailed) {
+			t.Errorf("expected ErrXDRDecodeFailed for empty, got %v", err)
+		}
+	})
+
+	t.Run("truncated", func(t *testing.T) {
+		_, err := DecodeLedgerCloseMeta(truncated)
+		if err == nil {
+			t.Fatal("expected error for truncated input, got nil")
+		}
+		if !errors.Is(err, ErrXDRDecodeFailed) {
+			t.Errorf("expected ErrXDRDecodeFailed for truncated, got %v", err)
+		}
+	})
+
+	t.Run("trailing_bytes", func(t *testing.T) {
+		_, err := DecodeLedgerCloseMeta(withTrailing)
+		if err == nil {
+			t.Fatal("expected error for trailing bytes, got nil")
+		}
+		if !errors.Is(err, ErrXDRDecodeFailed) {
+			t.Errorf("expected ErrXDRDecodeFailed for trailing_bytes, got %v", err)
+		}
+	})
+
+	// Inputs whose first 4 bytes form a discriminant outside {0, 1, 2}
+	// are classified as ErrUnsupportedXDRVariant by the view pre-check.
+	t.Run("random_bytes_unsupported_discriminant", func(t *testing.T) {
+		_, err := DecodeLedgerCloseMeta(randomBytes)
+		if err == nil {
+			t.Fatal("expected error for random bytes, got nil")
+		}
+		if !errors.Is(err, ErrUnsupportedXDRVariant) {
+			t.Errorf("expected ErrUnsupportedXDRVariant for random bytes (disc -66052), got %v", err)
+		}
+	})
+
+	t.Run("different_xdr_type_scval_unsupported_discriminant", func(t *testing.T) {
+		_, err := DecodeLedgerCloseMeta(scBuf.Bytes())
+		if err == nil {
+			t.Fatal("expected error for ScVal input, got nil")
+		}
+		// ScVal type ScvU32 has discriminant 3, which is outside {0, 1, 2}
+		// and classified as unsupported variant by the view pre-check.
+		if !errors.Is(err, ErrUnsupportedXDRVariant) {
+			t.Errorf("expected ErrUnsupportedXDRVariant for ScVal (disc 3), got %v", err)
+		}
+	})
+}
+
+func TestDecodeLedgerCloseMeta_UnsupportedOuterVariant(t *testing.T) {
+	// After the XDR view pre-check, DecodeLedgerCloseMeta should return
+	// ErrUnsupportedXDRVariant (not ErrXDRDecodeFailed) for outer
+	// discriminants outside the supported set {0, 1, 2}.
+	tests := []struct {
+		name string
+		disc uint32
+	}{
+		{name: "discriminant_99", disc: 99},
+		{name: "discriminant_42", disc: 42},
+		{name: "discriminant_3", disc: 3},
+		{name: "discriminant_max_int32", disc: 0x7FFFFFFF},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Construct a valid 4-byte big-endian discriminant followed
+			// by padding (the view only reads 4 bytes for V()).
+			var buf [8]byte
+			binary.BigEndian.PutUint32(buf[:4], tc.disc)
+
+			_, err := DecodeLedgerCloseMeta(buf[:])
+			if err == nil {
+				t.Fatalf("expected error for unsupported discriminant %d, got nil", tc.disc)
+			}
+			if !errors.Is(err, ErrUnsupportedXDRVariant) {
+				t.Errorf("expected ErrUnsupportedXDRVariant for discriminant %d, got %v", tc.disc, err)
+			}
+			// Must not be a generic decode failure.
+			if errors.Is(err, ErrXDRDecodeFailed) {
+				t.Errorf("discriminant %d should not be classified as ErrXDRDecodeFailed", tc.disc)
+			}
+		})
+	}
+
+	// Also verify structural validation catches an unsupported outer variant directly.
+	lcm := xdr.LedgerCloseMeta{V: 99}
+	err := validateLedgerCloseMetaStructure(&lcm)
+	if !errors.Is(err, ErrUnsupportedXDRVariant) {
+		t.Errorf("expected ErrUnsupportedXDRVariant from validateLedgerCloseMetaStructure, got %v", err)
+	}
+}
+
+func TestDecodeLedgerCloseMeta_TruncatedDiscriminant(t *testing.T) {
+	// Fewer than 4 bytes: the view cannot read the discriminant.
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{name: "empty", data: nil},
-		{name: "truncated", data: truncated},
-		{name: "random_bytes", data: randomBytes},
-		{name: "different_xdr_type_scval", data: scBuf.Bytes()},
-		{name: "trailing_bytes", data: withTrailing},
+		{name: "one_byte", data: []byte{0x00}},
+		{name: "two_bytes", data: []byte{0x00, 0x00}},
+		{name: "three_bytes", data: []byte{0x00, 0x00, 0x00}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeLedgerCloseMeta(tc.data)
 			if err == nil {
-				t.Fatalf("expected error for %s, got nil", tc.name)
+				t.Fatal("expected error for truncated discriminant, got nil")
 			}
 			if !errors.Is(err, ErrXDRDecodeFailed) {
-				t.Errorf("expected ErrXDRDecodeFailed for %s, got %v", tc.name, err)
+				t.Errorf("expected ErrXDRDecodeFailed, got %v", err)
 			}
 		})
-	}
-}
-
-func TestDecodeLedgerCloseMeta_UnsupportedVariant(t *testing.T) {
-	// Outer variant 99 encoded in XDR (4-byte big-endian int32)
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], 99)
-
-	// SafeUnmarshal rejects unknown union switch in go-xdr with ErrXDRDecodeFailed,
-	// while structural validation catches an unhandled variant directly.
-	_, err := DecodeLedgerCloseMeta(buf[:])
-	if err == nil {
-		t.Fatal("expected error for unsupported discriminant 99, got nil")
-	}
-
-	// Also verify structural validation catches an unsupported outer variant directly.
-	lcm := xdr.LedgerCloseMeta{V: 99}
-	err = validateLedgerCloseMetaStructure(&lcm)
-	if !errors.Is(err, ErrUnsupportedXDRVariant) {
-		t.Errorf("expected ErrUnsupportedXDRVariant, got %v", err)
 	}
 }
 

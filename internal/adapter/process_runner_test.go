@@ -603,7 +603,9 @@ func TestProcessRunner_RejectsNilVerifiedInput(t *testing.T) {
 }
 
 func TestProcessRunner_RealGoIngestAdapter_ProtocolIntegration(t *testing.T) {
-	verified, _, expectedHash := makeVerifiedInput(t, []byte("dummy-xdr-for-protocol-test"))
+	// Use bytes starting with a supported outer discriminant (V=1) followed by
+	// malformed XDR body so SafeUnmarshal fails with xdr_unmarshal_failed.
+	verified, _, expectedHash := makeVerifiedInput(t, []byte{0x00, 0x00, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef})
 	runner := newTestRunner(t, realGoIngestBinaryPath, t.TempDir(), 0)
 
 	out, err := runner.Run(context.Background(), baseRunParams("case_unit4_protocol"), verified)

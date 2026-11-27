@@ -114,10 +114,46 @@ func LoadAndVerifyInput(path, expectedSHA256 string, maxBytes int64) (*LoadedInp
 // the official Stellar Go SDK's SafeUnmarshal (which rejects truncated XDR and
 // trailing bytes) and validates the outer and inner union variants before any
 // SDK accessor is invoked.
+//
+// Before full unmarshalling, the outer discriminant is read using the SDK's
+// zero-copy LedgerCloseMetaView.V() so that unsupported outer variants (values
+// outside {0, 1, 2}) are classified as ErrUnsupportedXDRVariant rather than
+// generic decode failures. SafeUnmarshal rejects unknown union switches, so
+// without this pre-check an unsupported outer variant would be reported as
+// ErrXDRDecodeFailed (decode.status = "invalid_input") instead of
+// ErrUnsupportedXDRVariant (decode.status = "unsupported_type").
+//
+// Inner variant classification limitation: after SafeUnmarshal succeeds for a
+// supported outer variant (0, 1 or 2), validateLedgerCloseMetaStructure checks
+// inner union variants (GeneralizedTransactionSet.V, TransactionPhase.V).
+// However, the pinned SDK v0.9.0 cannot distinguish a malformed inner structure
+// from a future inner variant at the XDR level — SafeUnmarshal either succeeds
+// or fails as a whole. Where the SDK cannot make this distinction, the adapter
+// conservatively treats the inner value as unsupported (ErrUnsupportedXDRVariant)
+// when it falls outside the validated set.
 func DecodeLedgerCloseMeta(data []byte) (*DecodedLedgerMeta, error) {
 	if len(data) == 0 {
 		return nil, newError(ErrXDRDecodeFailed, "decode", "empty_xdr_input",
 			"input XDR payload is empty", nil)
+	}
+
+	// Pre-check: read the outer union discriminant using the SDK's zero-copy
+	// view API before attempting full unmarshalling. This allows unsupported
+	// outer variants to be classified correctly even though SafeUnmarshal
+	// would reject them as generic decode failures.
+	view := xdr.LedgerCloseMetaView(data)
+	outerV, err := view.V()
+	if err != nil {
+		// Fewer than 4 bytes: genuinely truncated XDR discriminant.
+		return nil, newError(ErrXDRDecodeFailed, "decode", "truncated_xdr_discriminant",
+			"input too short to read XDR union discriminant (need >= 4 bytes)", err)
+	}
+	switch outerV {
+	case 0, 1, 2:
+		// Supported outer variant — proceed to full unmarshalling.
+	default:
+		return nil, newError(ErrUnsupportedXDRVariant, "decode", "unsupported_lcm_variant",
+			fmt.Sprintf("unsupported LedgerCloseMeta outer variant V=%d (supported: 0, 1, 2)", outerV), nil)
 	}
 
 	var lcm xdr.LedgerCloseMeta

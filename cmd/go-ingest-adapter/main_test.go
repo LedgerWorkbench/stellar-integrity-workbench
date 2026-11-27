@@ -238,7 +238,11 @@ func TestGoIngestAdapter_ProcessRunner_Success(t *testing.T) {
 }
 
 func TestGoIngestAdapter_ProcessRunner_MalformedXDR(t *testing.T) {
-	verified := stageVerifiedInput(t, []byte("not-valid-xdr-bytes"))
+	// Use data whose first 4 bytes form a supported outer discriminant (V=1)
+	// but whose body is truncated garbage, so SafeUnmarshal fails with
+	// ErrXDRDecodeFailed (decode.status = "invalid_input").
+	malformed := []byte{0x00, 0x00, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF}
+	verified := stageVerifiedInput(t, malformed)
 	runner := newTestRunner(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -275,6 +279,65 @@ func TestGoIngestAdapter_ProcessRunner_MalformedXDR(t *testing.T) {
 	}
 	if out.Result.SemanticProjection != nil {
 		t.Errorf("SemanticProjection = %s, want nil", string(*out.Result.SemanticProjection))
+	}
+}
+
+func TestGoIngestAdapter_ProcessRunner_UnsupportedVariant(t *testing.T) {
+	// Construct a 4-byte big-endian int32 discriminant of 99 (unsupported outer variant).
+	unsupportedData := []byte{0x00, 0x00, 0x00, 99}
+	verified := stageVerifiedInput(t, unsupportedData)
+	runner := newTestRunner(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	out, err := runner.Run(ctx, adapter.RunParams{
+		RunID:       "run_unit5_unsupported_variant",
+		CaseID:      "case_synthetic_unsupported_v99",
+		Operation:   adapter.OperationDecodeLedgerMeta,
+		InputFormat: adapter.InputFormatLedgerCloseMeta,
+		Target: adapter.RequestTarget{
+			AdapterID:      adapter.AdapterIDGoIngest,
+			AdapterVersion: adapter.DefaultGoAdapterVersion,
+			SDKVersion:     adapter.PinnedGoSDKVersion,
+		},
+		Limits: adapter.RequestLimits{
+			TimeoutMs:      10000,
+			MaxInputBytes:  1024 * 1024,
+			MaxOutputBytes: 1024 * 1024,
+		},
+	}, verified)
+	if err != nil {
+		t.Fatalf("runner.Run failed: %v", err)
+	}
+
+	// Verify process-level protocol expectations.
+	if out.ActualExitCode != exitDecodeError {
+		t.Errorf("ActualExitCode = %d, want %d (exitDecodeError)", out.ActualExitCode, exitDecodeError)
+	}
+	if out.Result.Execution.Status != adapter.ExecutionStatusFailed {
+		t.Errorf("Execution.Status = %q, want %q", out.Result.Execution.Status, adapter.ExecutionStatusFailed)
+	}
+	if out.Result.Execution.ExitCode != exitDecodeError {
+		t.Errorf("Execution.ExitCode = %d, want %d", out.Result.Execution.ExitCode, exitDecodeError)
+	}
+	if out.Result.Decode.Status != adapter.DecodeStatusUnsupportedType {
+		t.Errorf("Decode.Status = %q, want %q", out.Result.Decode.Status, adapter.DecodeStatusUnsupportedType)
+	}
+	if out.Result.SemanticProjection != nil {
+		t.Errorf("SemanticProjection = %s, want nil", string(*out.Result.SemanticProjection))
+	}
+
+	// Verify diagnostic code is the specific unsupported outer variant code.
+	foundDiagCode := false
+	for _, d := range out.Result.Diagnostics {
+		if d.Code == "unsupported_lcm_variant" {
+			foundDiagCode = true
+			break
+		}
+	}
+	if !foundDiagCode {
+		t.Errorf("expected diagnostic code 'unsupported_lcm_variant', got diagnostics: %+v", out.Result.Diagnostics)
 	}
 }
 
