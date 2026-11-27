@@ -1,6 +1,6 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–5 implemented; Units 6–10 pending
+**Status:** Units 1–6 implemented; Units 7–10 pending
 
 ## 1. Implemented Components
 
@@ -81,6 +81,12 @@
   - `transactions`: `total`, `successful`, `failed`, `hashes` (in processing order, bounded to `MaxProjectedTxHashes = 256`), and `hashes_truncated` (`true` when `total > 256`).
 - **Network passphrase limitation:** `ingest.NewLedgerTransactionReaderFromLedgerCloseMeta` requires a `networkPassphrase` argument, which is not part of Adapter Protocol v1. The Unit 5 adapter does not hardcode or infer Public/Testnet passphrases and instead uses `xdr.LedgerCloseMeta` accessors and `ingest/ledger.TransactionCounts`. Full per-transaction envelope/operation extraction via `LedgerTransactionReader` is deferred until an explicit protocol extension supplies network identity or passphrase.
 
-## 6. Remaining Work (Units 6–10)
+## 6. Unit 6: Assertion Evaluation Engine (`internal/assertion`, `internal/domain`)
 
-- **Units 6–10:** Assertion evaluation engine, evidence bundle generation, and full `workbench-worker` run command wiring.
+- **Typed evaluator:** `assertion.Evaluate(expectations, input)` evaluates the five declared v1 assertion kinds (`ledger_sequence_equals`, `transaction_count_equals`, `transaction_hash_present`, `decoded_type_equals`, `input_hash_equals`) in deterministic manifest order and returns `domain.AssertionResult` values plus a derived `domain.RunOutcome`. See `docs/architecture/assertion-engine.md`.
+- **Unit 5 projection mapping:** `assertion.ProjectionFromGoIngest` maps `goingest.SemanticProjection` into `domain.SemanticProjection`, preserving `TransactionHashesTruncated` so `transaction_hash_present` returns `inconclusive` rather than `fail` when a hash is absent from a truncated list.
+- **Outcome policy:** `domain.DeriveOutcome` treats all v1 manifest expectations as required (`fail` -> `regression`, `inconclusive` -> `inconclusive`, all `skipped` -> `not_applicable`, all `pass` -> `pass`, mixed `pass`+`skipped` -> `inconclusive`).
+
+## 7. Remaining Work (Units 7–10)
+
+- **Units 7–10:** Evidence bundle generation, report rendering, and full `workbench-worker` run command wiring.
