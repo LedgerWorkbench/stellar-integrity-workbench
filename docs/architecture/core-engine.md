@@ -1,6 +1,6 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–7 implemented; Units 8–10 pending
+**Status:** Units 1–8 implemented; Units 9–10 pending
 
 ## 1. Implemented Components
 
@@ -92,6 +92,11 @@
 - **Manifest & schema:** Versioned `1.0.0` Draft 2020-12 schema (`schemas/evidence-bundle.schema.json`) with format assertions (`AssertFormat()`), canonical UTC `'Z'` RFC 3339 timestamps, separate adapter-reported (`adapter_duration_ms`) and host-measured (`host_duration_ms`, `host_exit_code`) execution metrics, completed-run assertion/outcome/artifact-role consistency, and artifact SHA-256/byte-length records. See `docs/architecture/evidence-bundle.md`.
 - **Immutable storage & verification:** `evidence.WriteBundle` re-decodes and schema-validates `adapter.RunOutput.StdoutCopy()` against `AdapterOutput.Result` (`reflect.DeepEqual`), recalculates completed-run assertions via Unit 6 (`assertion.Evaluate`) from the trusted `VerifiedInput.SHA256()` and re-decoded projection (supporting genuine `null` projections), confines writes and partial-write cleanup via `os.Root`, stores raw stdout, semantic projection, and ordered assertions exclusively (`O_EXCL`, `0400`), and runs `evidence.VerifyBundle` (bounded 1 MiB `manifest.json`, `runRoot.FS()` scan, `os.SameFile` symlink protection, and `assertions.json` vs `manifest.assertions` consistency) after writing.
 
-## 8. Remaining Work (Units 8–10)
+## 8. Unit 8: JSON and Markdown Reporting (`internal/reporting`)
 
-- **Units 8–10:** Report rendering, full `workbench-worker` run command wiring, and end-to-end integration.
+- **Canonical input:** `reporting.RenderJSON(manifest)` and `reporting.RenderMarkdown(manifest)` accept a validated `*evidence.Manifest` only and do not perform filesystem I/O. See `docs/architecture/reporting.md`.
+- **Schema & safety:** `RenderJSON` reuses `schemas/evidence-bundle.schema.json` via `evidence.DecodeAndValidateManifest`; `RenderMarkdown` validates the manifest before rendering, escapes all untrusted strings, and preserves the strict separation between execution state (`completed`, `failed`, `cancelled`) and conformance outcome (`pass`, `regression`, `inconclusive`, `not_applicable`, or `null` for incomplete runs).
+
+## 9. Remaining Work (Units 9–10)
+
+- **Units 9–10:** Full `workbench-worker` run command wiring and end-to-end integration.
