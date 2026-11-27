@@ -89,8 +89,8 @@
 
 ## 7. Unit 7: Immutable Evidence Bundle (`internal/evidence`, `schemas/evidence-bundle.schema.json`)
 
-- **Manifest & schema:** Versioned `1.0.0` Draft 2020-12 schema (`schemas/evidence-bundle.schema.json`) preserving provenance, verified input integrity, worker/adapter metadata, UTC RFC 3339 run timestamps, typed assertions, structured diagnostics, and artifact SHA-256/byte-length records. See `docs/architecture/evidence-bundle.md`.
-- **Immutable storage & verification:** `evidence.WriteBundle` confines writes via `os.Root`, stores raw validated adapter stdout (`adapter.RunOutput.StdoutCopy()`), semantic projection, and ordered assertions exclusively (`O_EXCL`, `0400`), and runs `evidence.VerifyBundle` after writing to verify all hashes, byte lengths, and absence of unlisted files or symlinks.
+- **Manifest & schema:** Versioned `1.0.0` Draft 2020-12 schema (`schemas/evidence-bundle.schema.json`) with format assertions (`AssertFormat()`), canonical UTC `'Z'` RFC 3339 timestamps, separate adapter-reported (`adapter_duration_ms`) and host-measured (`host_duration_ms`, `host_exit_code`) execution metrics, completed-run assertion/outcome/artifact-role consistency, and artifact SHA-256/byte-length records. See `docs/architecture/evidence-bundle.md`.
+- **Immutable storage & verification:** `evidence.WriteBundle` confines writes and partial-write cleanup via `os.Root`, stores raw validated adapter stdout (`adapter.RunOutput.StdoutCopy()`), semantic projection, and ordered assertions exclusively (`O_EXCL`, `0400`), and runs `evidence.VerifyBundle` (bounded 1 MiB `manifest.json`, `runRoot.FS()` scan, `os.SameFile` symlink protection, and `assertions.json` vs `manifest.assertions` consistency) after writing.
 
 ## 8. Remaining Work (Units 8–10)
 
