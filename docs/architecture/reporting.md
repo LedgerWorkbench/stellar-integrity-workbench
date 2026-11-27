@@ -21,7 +21,7 @@ func RenderMarkdown(manifest *evidence.Manifest) ([]byte, error)
 
 `RenderMarkdown` validates the manifest through both `evidence.ValidateManifest` and `evidence.DecodeAndValidateManifest` before rendering the following sections in fixed order:
 
-1. **Report Identity** (schema version, run ID, case ID, classification, source provenance)
+1. **Report Identity** (schema version, run ID, case ID, classification, complete source provenance: kind, URL, repository, issue number, pull request number, retrieval timestamp, notes — missing optional fields rendered as `not recorded`)
 2. **Execution** (run state, UTC start/completion timestamps, host-observed exit code/duration, adapter-reported status/exit code/duration)
 3. **Conformance** (conformance outcome and explicit interpretation)
 4. **Input Integrity** (format, encoding, SHA-256, byte length, corpus-relative `object_path`, detected type, network name, ledger sequence, protocol version)
@@ -43,10 +43,19 @@ func RenderMarkdown(manifest *evidence.Manifest) ([]byte, error)
 
 For `failed` or `cancelled` runs, any recorded assertions are labeled `Partial Results — No Conformance Outcome Derived`, and no conformance outcome is derived from them.
 
-## 5. Missing Values, Untrusted Input Escaping, and Determinism
+## 5. Missing Values, Untrusted Input Escaping, Sensitive-Content Protection, and Determinism
 
 - Optional nil fields render explicitly as `not recorded` (or `unavailable` for missing observed assertion values); no placeholder metrics or fake transaction counts are invented.
 - All manifest strings are treated as untrusted input: `escapeMarkdown` replaces newlines/tabs/control characters and backslash-escapes Markdown-sensitive characters (`\`, `` ` ``, `*`, `_`, `{`, `}`, `[`, `]`, `(`, `)`, `#`, `+`, `-`, `!`, `|`, `<`, `>`, `~`). Provenance URLs are rendered as escaped text rather than active links.
+- **Shared sensitive-content validation (`validateReportSafety`):** Both `RenderJSON` and `RenderMarkdown` run the same pre-render safety check across all string-bearing manifest fields (including nested `expected`/`observed` values) and fail closed with `ErrUnsafeReportContent` (reporting only the field path and category, never the detected secret value) without mutating the manifest or silently masking/rewriting JSON fields. Rejected categories:
+  - Unix absolute local filesystem paths (`/home/...`, `/tmp/...`, `/var/...`, `/etc/...`, `/Users/...`, `/mnt/...`, `/workspace/...`, etc., and `file://` URIs), while keeping normal public `https://` URLs and corpus-relative `object_path` values valid.
+  - Windows drive-letter absolute paths (`C:\...`) and UNC paths (`\\server\share\...`).
+  - Bearer authorization credentials (`Bearer ...`).
+  - Common credential assignments (`api_key`, `access_token`, `refresh_token`, `password`, `passwd`, `secret`, `private_key`, `client_secret`, `auth_token`).
+  - PEM private-key headers (`-----BEGIN ... PRIVATE KEY-----`).
+  - Stellar secret-key encodings (`S[A-Z2-7]{55}`).
+  - HTTP(S) URLs containing userinfo credentials (`user:pass@host`) or sensitive query parameters (`access_token`, `api_key`, `password`, `sig`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, etc.).
+- **Detection limitations:** Pattern-based detection is a defense-in-depth safeguard for recognizable sensitive content, not a substitute for upstream secret management or a guarantee that every possible secret format can be identified.
 - Both `RenderJSON` and `RenderMarkdown` are pure, deterministic functions over `*evidence.Manifest` and never mutate their input.
 
 ## 6. Deferred Work (Unit 9)

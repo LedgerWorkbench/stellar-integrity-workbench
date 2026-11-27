@@ -95,7 +95,7 @@
 ## 8. Unit 8: JSON and Markdown Reporting (`internal/reporting`)
 
 - **Canonical input:** `reporting.RenderJSON(manifest)` and `reporting.RenderMarkdown(manifest)` accept a validated `*evidence.Manifest` only and do not perform filesystem I/O. See `docs/architecture/reporting.md`.
-- **Schema & safety:** `RenderJSON` reuses `schemas/evidence-bundle.schema.json` via `evidence.DecodeAndValidateManifest`; `RenderMarkdown` validates the manifest before rendering, escapes all untrusted strings, and preserves the strict separation between execution state (`completed`, `failed`, `cancelled`) and conformance outcome (`pass`, `regression`, `inconclusive`, `not_applicable`, or `null` for incomplete runs).
+- **Schema & safety:** `RenderJSON` reuses `schemas/evidence-bundle.schema.json` via `evidence.DecodeAndValidateManifest`; `RenderMarkdown` validates the manifest before rendering, displays complete provenance (`not recorded` when nil), and escapes all untrusted strings. Both renderers enforce a shared fail-closed sensitive-content check (`reporting.ErrUnsafeReportContent`) and preserve the strict separation between execution state (`completed`, `failed`, `cancelled`) and conformance outcome (`pass`, `regression`, `inconclusive`, `not_applicable`, or `null` for incomplete runs).
 
 ## 9. Remaining Work (Units 9–10)
 
