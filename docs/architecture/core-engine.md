@@ -1,19 +1,19 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–5 implemented; Units 6–9 pending
+**Status:** Units 1–5 implemented; Units 6–10 pending
 
 ## 1. Implemented Components
 
-### Unit 1: Corpus Manifest & Domain Model
+### Unit 1: Command Skeletons
+- `cmd/workbench-worker/main.go`, `cmd/go-ingest-adapter/main.go`
+
+### Unit 2: Corpus Manifest & Domain Model
 - `schemas/corpus-manifest.schema.json`, `internal/corpus/`, `internal/domain/`
 - Strict Draft 2020-12 manifest validation, evidence classification, path safety (`ValidateObjectPath`), and run/assertion domain types.
 
-### Unit 2: Local File Source & Integrity Verification
+### Unit 3: Local File Source & Integrity Verification
 - `internal/source/localfile/`
 - Root-confined corpus access via Go 1.25 `os.Root`, non-blocking regular-file verification, bounded streaming read (`DefaultMaxBytes = 64 MiB`), SHA-256 verification, and immutable `VerifiedInput`.
-
-### Unit 3: Command Skeletons
-- `cmd/workbench-worker/main.go`, `cmd/go-ingest-adapter/main.go`
 
 ### Unit 4: Adapter Protocol & Allowlisted Process Runner
 - `schemas/adapter-request.schema.json`, `schemas/adapter-result.schema.json`, `schemas/schemas.go`
@@ -63,8 +63,9 @@
 
 - **Pinned SDK:** `github.com/stellar/go-stellar-sdk v0.9.0` (resolves to tag `v0.9.0`, commit `5410d3410e212331399d1518cc13150279969dac`).
 - **Input integrity:** `goingest.LoadAndVerifyInput` rejects missing files, symlinks, directories, and non-regular files via `os.Lstat` and `f.Stat`, enforces `limits.max_input_bytes`, reads exact raw bytes without normalization, computes SHA-256, and rejects any mismatch against `input_sha256` before invoking XDR decoding.
-- **XDR decoder API:** `xdr.SafeUnmarshal(data, &lcm)` into `xdr.LedgerCloseMeta`, which rejects empty, truncated, and malformed XDR as well as trailing unconsumed bytes.
+- **XDR decoder API:** Pre-checks the outer union discriminant using `xdr.LedgerCloseMetaView(data).V()` (official SDK zero-copy view API) before calling `xdr.SafeUnmarshal(data, &lcm)` into `xdr.LedgerCloseMeta`. Truncated discriminants (< 4 bytes) return `ErrXDRDecodeFailed`; outer discriminants outside `{0, 1, 2}` return `ErrUnsupportedXDRVariant` (`decode.status = "unsupported_type"`); `SafeUnmarshal` rejects truncated payloads, malformed XDR, and trailing unconsumed bytes with `ErrXDRDecodeFailed` (`decode.status = "invalid_input"`).
 - **Supported outer `LedgerCloseMeta` variants:** `V0` (`LedgerCloseMetaV0`), `V1` (`LedgerCloseMetaV1`), and `V2` (`LedgerCloseMetaV2`), validated structurally (including `GeneralizedTransactionSet.V == 1` and `TransactionPhase.V` `0`/`1`, plus `TxSet`/`TxProcessing` count alignment) before calling SDK accessors. Unknown or unsupported variants return structured `ErrUnsupportedXDRVariant` / `ErrXDRDecodeFailed` errors without panicking.
+- **Inner variant classification limitation:** After `SafeUnmarshal` succeeds for a supported outer variant (`0`, `1`, or `2`), `validateLedgerCloseMetaStructure` checks inner union variants (`GeneralizedTransactionSet.V`, `TransactionPhase.V`). However, the pinned SDK `v0.9.0` cannot distinguish a malformed inner structure from a future inner variant at the XDR level — `SafeUnmarshal` either succeeds or fails as a whole. Where the SDK cannot make this distinction, the adapter conservatively treats decoded inner variants outside the validated set as `ErrUnsupportedXDRVariant`.
 - **SDK accessors & ingest helpers used:**
   - `xdr.LedgerCloseMeta.LedgerSequence()`
   - `xdr.LedgerCloseMeta.ProtocolVersion()`
@@ -80,6 +81,6 @@
   - `transactions`: `total`, `successful`, `failed`, `hashes` (in processing order, bounded to `MaxProjectedTxHashes = 256`), and `hashes_truncated` (`true` when `total > 256`).
 - **Network passphrase limitation:** `ingest.NewLedgerTransactionReaderFromLedgerCloseMeta` requires a `networkPassphrase` argument, which is not part of Adapter Protocol v1. The Unit 5 adapter does not hardcode or infer Public/Testnet passphrases and instead uses `xdr.LedgerCloseMeta` accessors and `ingest/ledger.TransactionCounts`. Full per-transaction envelope/operation extraction via `LedgerTransactionReader` is deferred until an explicit protocol extension supplies network identity or passphrase.
 
-## 6. Remaining Work (Units 6–9)
+## 6. Remaining Work (Units 6–10)
 
-- **Units 6–9:** Assertion evaluation engine, evidence bundle generation, and full `workbench-worker` run command wiring.
+- **Units 6–10:** Assertion evaluation engine, evidence bundle generation, and full `workbench-worker` run command wiring.
