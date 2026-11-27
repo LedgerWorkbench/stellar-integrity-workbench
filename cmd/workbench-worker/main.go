@@ -1,26 +1,32 @@
-// Command workbench-worker validates corpus manifests, orchestrates adapter
-// execution, evaluates assertions and produces evidence bundles and reports.
-//
-// This is the primary local command for running conformance and regression
-// jobs against immutable Stellar ledger-close metadata inputs.
+// Command workbench-worker validates corpus manifests, verifies local
+// ledger-close metadata inputs, executes the allowlisted Go ingestion adapter,
+// evaluates assertions, writes and verifies immutable evidence bundles, and
+// generates JSON and Markdown reports.
 //
 // Usage:
 //
-//	workbench-worker run --manifest <path> --input <path> --output-dir <path>
+//	workbench-worker run --manifest <path> --input-root <dir> --input <relpath> --output-dir <dir> [--json]
 //	workbench-worker version
+//	workbench-worker help
 //
 // Diagnostics are written to stderr using structured logging. Machine-readable
-// output is written to stdout only when explicitly requested.
+// output is written to stdout only when --json is specified.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/adapter"
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/source/localfile"
 )
 
 // version is set at build time via -ldflags.
@@ -34,88 +40,142 @@ const (
 	exitAdapterError     = 3
 	exitAssertionFailure = 4
 	exitInternalError    = 5
+	exitInconclusive     = 6
+	exitCancelled        = 7
+	exitNotApplicable    = 8
 )
 
 func main() {
-	os.Exit(run())
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run() int {
-	// Structured logger writing diagnostics to stderr only.
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+func run(args []string, stdout, stderr io.Writer) int {
+	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
-	// Context that is cancelled on SIGINT or SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if len(os.Args) < 2 {
-		printUsage()
+	if len(args) < 1 {
+		printUsage(stderr)
 		return exitUsageError
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "version":
-		fmt.Fprintf(os.Stdout, "workbench-worker %s\n", version)
+		fmt.Fprintf(stdout, "workbench-worker %s (sdk %s)\n", version, adapter.PinnedGoSDKVersion)
 		return exitOK
 
 	case "run":
-		return runJob(ctx, logger)
+		return runCommand(ctx, args[1:], stdout, stderr, logger)
 
 	case "help", "-h", "--help":
-		printUsage()
+		printUsage(stdout)
 		return exitOK
 
 	default:
-		logger.Error("unknown command", "command", os.Args[1])
-		printUsage()
+		logger.Error("unknown command", "command", args[0])
+		printUsage(stderr)
 		return exitUsageError
 	}
 }
 
-// runJob is the entry point for a conformance or regression job.
-//
-// This skeleton validates that the command is reachable and reports that the
-// full processing pipeline is not yet implemented. It does not fake a
-// successful run.
-func runJob(ctx context.Context, logger *slog.Logger) int {
-	logger.InfoContext(ctx, "workbench-worker starting", "version", version)
+func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer, logger *slog.Logger) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 
-	// Check for early cancellation before proceeding.
-	if err := ctx.Err(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			logger.WarnContext(ctx, "worker cancelled before job started")
-			return exitOK
+	var cfg runConfig
+	fs.StringVar(&cfg.ManifestPath, "manifest", "", "path to the local corpus manifest JSON file")
+	fs.StringVar(&cfg.InputRoot, "input-root", "", "trusted local corpus-object root directory")
+	fs.StringVar(&cfg.InputObject, "input", "", "canonical corpus-relative object path")
+	fs.StringVar(&cfg.OutputDir, "output-dir", "", "existing output directory for evidence and reports")
+	fs.BoolVar(&cfg.JSONOutput, "json", false, "emit machine-readable JSON output to stdout")
+	fs.Int64Var(&cfg.TimeoutMs, "timeout-ms", adapter.DefaultTimeoutMs, "adapter execution timeout in milliseconds")
+	fs.Int64Var(&cfg.MaxInputBytes, "max-input-bytes", localfile.DefaultMaxBytes, "maximum allowed input bytes")
+	fs.Int64Var(&cfg.MaxOutputBytes, "max-output-bytes", adapter.DefaultMaxOutputBytes, "maximum allowed adapter stdout bytes")
+
+	if err := fs.Parse(args); err != nil {
+		if cfg.JSONOutput {
+			emitJSONError(stdout, "invalid_flags", "invalid command flags")
+		} else {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			printUsage(stderr)
 		}
-		logger.ErrorContext(ctx, "unexpected context error", "error", err)
-		return exitInternalError
+		return exitUsageError
+	}
+	if fs.NArg() > 0 {
+		if cfg.JSONOutput {
+			emitJSONError(stdout, "unexpected_arguments", "unexpected positional arguments")
+		} else {
+			fmt.Fprintf(stderr, "error: unexpected positional arguments: %v\n", fs.Args())
+			printUsage(stderr)
+		}
+		return exitUsageError
 	}
 
-	// The manifest validation, input verification, adapter execution,
-	// assertion evaluation and evidence generation pipeline is implemented
-	// in subsequent units (Units 2–9). This command will report an error
-	// until the full pipeline is wired.
-	logger.ErrorContext(ctx, "run command is not yet implemented; "+
-		"manifest validation, adapter execution and assertion evaluation "+
-		"will be added in subsequent implementation units")
-	fmt.Fprintln(os.Stderr, "error: run command is not yet implemented")
-	return exitUsageError
+	jsonReport, exitCode, err := executeRun(ctx, cfg, logger)
+	if err != nil {
+		var we *workerError
+		code := "internal_error"
+		msg := "worker execution failed"
+		if errors.As(err, &we) {
+			code = we.Code
+			msg = we.Message
+		}
+		logger.ErrorContext(ctx, "workbench-worker failed", "code", code, "exit_code", exitCode, "error", err)
+		if cfg.JSONOutput {
+			emitJSONError(stdout, code, msg)
+		} else {
+			fmt.Fprintf(stderr, "error (%s): %s\n", code, msg)
+		}
+		return exitCode
+	}
+
+	if cfg.JSONOutput {
+		_, _ = stdout.Write(jsonReport)
+	}
+	return exitCode
 }
 
-func printUsage() {
-	fmt.Fprint(os.Stderr, `Usage: workbench-worker <command> [flags]
+func emitJSONError(w io.Writer, code, message string) {
+	env := jsonErrorEnvelope{
+		Status:  "error",
+		Code:    code,
+		Message: message,
+	}
+	b, _ := json.Marshal(env)
+	_, _ = fmt.Fprintf(w, "%s\n", b)
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprint(w, `Usage: workbench-worker <command> [flags]
 
 Commands:
-  run       Execute a conformance or regression job (not yet implemented)
+  run       Execute a local conformance or regression replay job
   version   Print the worker version
   help      Show this help message
 
-Run flags (planned):
-  --manifest    Path to the corpus case manifest (JSON)
-  --input       Path to the immutable ledger-close metadata input
-  --output-dir  Directory for evidence bundles and reports
-  --json        Emit machine-readable JSON result to stdout
+Run flags:
+  --manifest          Path to the local corpus manifest JSON file (required)
+  --input-root        Trusted local corpus-object root directory (required)
+  --input             Canonical corpus-relative object path (required)
+  --output-dir        Existing output directory for evidence and reports (required)
+  --json              Emit machine-readable JSON output to stdout
+  --timeout-ms        Adapter timeout in milliseconds (default: 30000)
+  --max-input-bytes   Maximum allowed input size in bytes (default: 67108864)
+  --max-output-bytes  Maximum allowed adapter stdout bytes (default: 10485760)
+
+Exit Codes:
+  0  Completed run with pass
+  1  Invalid command, missing required flags, or usage error
+  2  Input or manifest validation error
+  3  Adapter unavailable, timeout, process failure, or invalid adapter response
+  4  Completed run with regression
+  5  Internal, evidence, or report generation failure
+  6  Completed run with inconclusive outcome
+  7  Cancelled run
+  8  Completed run with not_applicable outcome
 `)
 }
