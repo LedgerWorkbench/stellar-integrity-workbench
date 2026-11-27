@@ -16,11 +16,11 @@ func RenderJSON(manifest *evidence.Manifest) ([]byte, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("cannot render JSON report: manifest must not be nil")
 	}
-	if err := evidence.ValidateManifest(manifest); err != nil {
-		return nil, fmt.Errorf("cannot render JSON report: %w", err)
-	}
 	if err := validateReportSafety(manifest); err != nil {
 		return nil, err
+	}
+	if err := evidence.ValidateManifest(manifest); err != nil {
+		return nil, fmt.Errorf("cannot render JSON report: %w", err)
 	}
 
 	out, err := json.MarshalIndent(manifest, "", "  ")

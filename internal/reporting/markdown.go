@@ -18,11 +18,11 @@ func RenderMarkdown(manifest *evidence.Manifest) ([]byte, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("cannot render Markdown report: manifest must not be nil")
 	}
-	if err := evidence.ValidateManifest(manifest); err != nil {
-		return nil, fmt.Errorf("cannot render Markdown report: %w", err)
-	}
 	if err := validateReportSafety(manifest); err != nil {
 		return nil, err
+	}
+	if err := evidence.ValidateManifest(manifest); err != nil {
+		return nil, fmt.Errorf("cannot render Markdown report: %w", err)
 	}
 
 	// Enforce the exact same schema validation path as RenderJSON so both

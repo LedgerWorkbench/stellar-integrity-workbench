@@ -1,8 +1,11 @@
 package reporting
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"strings"
@@ -12,8 +15,9 @@ import (
 
 // ErrUnsafeReportContent is returned when a report renderer detects
 // recognizable sensitive content (such as local filesystem paths, credentials,
-// tokens, PEM private keys, Stellar secret keys, or sensitive URL parameters)
-// in the manifest. Renderers fail closed without emitting or mutating content.
+// tokens, PEM private keys, Stellar secret keys, sensitive object properties,
+// or sensitive URL parameters) in the manifest. Renderers fail closed without
+// emitting or mutating content.
 var ErrUnsafeReportContent = errors.New("unsafe report content")
 
 var (
@@ -23,7 +27,7 @@ var (
 	winDrivePattern    = regexp.MustCompile(`(?i)(^|[\s"'(=])[a-z]:(?:\\|/(?:users|windows|program|temp|tmp|workspace))`)
 	winUNCPattern      = regexp.MustCompile(`(^|[\s"'(=])\\\\[a-zA-Z0-9._-]+\\[^\s"']+`)
 	bearerTokenPattern = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}`)
-	credAssignPattern  = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|private[_-]?key|client[_-]?secret|auth[_-]?token)\s*[:=]\s*["']?[^\s"']{4,}`)
+	credAssignPattern  = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|pwd|secret|private[_-]?key|client[_-]?secret|auth[_-]?token)\s*[:=]\s*["']?[^\s"']{4,}`)
 	pemKeyPattern      = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	stellarSeedPattern = regexp.MustCompile(`\bS[A-Z2-7]{55}\b`)
 )
@@ -58,155 +62,105 @@ var sensitiveQueryParams = map[string]struct{}{
 	"private_key":          {},
 }
 
-// validateReportSafety inspects all string-bearing fields in manifest for
-// recognizable sensitive content and fails closed with ErrUnsafeReportContent.
-// Error messages identify only the field path and category, never the secret value.
+var sensitivePropertyKeys = map[string]struct{}{
+	"api_key":       {},
+	"apikey":        {},
+	"access_token":  {},
+	"refresh_token": {},
+	"password":      {},
+	"passwd":        {},
+	"pwd":           {},
+	"secret":        {},
+	"secret_key":    {},
+	"private_key":   {},
+	"client_secret": {},
+	"auth_token":    {},
+	"authorization": {},
+	"bearer":        {},
+	"token":         {},
+	"signing_key":   {},
+}
+
+// validateReportSafety marshals manifest to its canonical JSON representation,
+// decodes it into generic JSON values with UseNumber(), and recursively
+// inspects every object key, nested array, and string value for recognizable
+// sensitive content. It fails closed with ErrUnsafeReportContent, naming only
+// the field path and category without echoing any secret value.
 func validateReportSafety(manifest *evidence.Manifest) error {
 	if manifest == nil {
 		return nil
 	}
 
-	checks := []struct {
-		field string
-		value string
-	}{
-		{"schema_version", manifest.SchemaVersion},
-		{"run_id", manifest.RunID},
-		{"case_id", manifest.CaseID},
-		{"classification", string(manifest.Classification)},
-		{"provenance.kind", manifest.Provenance.Kind},
-		{"provenance.notes", manifest.Provenance.Notes},
-		{"input.sha256", manifest.Input.SHA256},
-		{"input.format", manifest.Input.Format},
-		{"input.encoding", manifest.Input.Encoding},
-		{"input.object_path", manifest.Input.ObjectPath},
-		{"input.network_name", manifest.Input.NetworkName},
-		{"worker.version", manifest.Worker.Version},
-		{"adapter.adapter_id", manifest.Adapter.AdapterID},
-		{"adapter.adapter_version", manifest.Adapter.AdapterVersion},
-		{"adapter.sdk_version", manifest.Adapter.SDKVersion},
-		{"run.started_at", manifest.Run.StartedAt},
-		{"run.completed_at", manifest.Run.CompletedAt},
-		{"run.state", string(manifest.Run.State)},
-	}
-	for _, c := range checks {
-		if err := checkSafeString(c.field, c.value); err != nil {
-			return err
-		}
+	rawJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("%w: failed to serialize manifest for safety inspection", ErrUnsafeReportContent)
 	}
 
-	optChecks := []struct {
-		field string
-		value *string
-	}{
-		{"provenance.url", manifest.Provenance.URL},
-		{"provenance.repository", manifest.Provenance.Repository},
-		{"provenance.retrieved_at", manifest.Provenance.RetrievedAt},
-		{"input.detected_type", manifest.Input.DetectedType},
-		{"worker.commit_sha", manifest.Worker.CommitSHA},
-		{"run.adapter_execution_status", manifest.Run.AdapterExecutionStatus},
+	var generic any
+	dec := json.NewDecoder(bytes.NewReader(rawJSON))
+	dec.UseNumber()
+	if err := dec.Decode(&generic); err != nil {
+		return fmt.Errorf("%w: failed to decode manifest JSON for safety inspection", ErrUnsafeReportContent)
 	}
-	for _, c := range optChecks {
-		if c.value != nil {
-			if err := checkSafeString(c.field, *c.value); err != nil {
-				return err
-			}
-		}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("%w: trailing JSON data during safety inspection", ErrUnsafeReportContent)
 	}
 
-	for i, a := range manifest.Assertions {
-		prefix := fmt.Sprintf("assertions[%d]", i)
-		if err := checkSafeString(prefix+".assertion_id", a.AssertionID); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".kind", string(a.Kind)); err != nil {
-			return err
-		}
-		if err := checkSafeValue(prefix+".expected", a.Expected); err != nil {
-			return err
-		}
-		if err := checkSafeValue(prefix+".observed", a.Observed); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".status", string(a.Status)); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".explanation", a.Explanation); err != nil {
-			return err
-		}
-		for j, ref := range a.EvidenceRefs {
-			if err := checkSafeString(fmt.Sprintf("%s.evidence_refs[%d]", prefix, j), ref); err != nil {
-				return err
-			}
-		}
-	}
-
-	for i, d := range manifest.Diagnostics.AdapterDiagnostics {
-		prefix := fmt.Sprintf("diagnostics.adapter_diagnostics[%d]", i)
-		if err := checkSafeString(prefix+".stage", d.Stage); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".code", d.Code); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".message", d.Message); err != nil {
-			return err
-		}
-	}
-	for i, lim := range manifest.Diagnostics.Limitations {
-		if err := checkSafeString(fmt.Sprintf("diagnostics.limitations[%d]", i), lim); err != nil {
-			return err
-		}
-	}
-	for i, art := range manifest.Artifacts {
-		prefix := fmt.Sprintf("artifacts[%d]", i)
-		if err := checkSafeString(prefix+".path", art.Path); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".role", art.Role); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".media_type", art.MediaType); err != nil {
-			return err
-		}
-		if err := checkSafeString(prefix+".sha256", art.SHA256); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return checkSafeJSONValue("$", generic)
 }
 
-func checkSafeValue(field string, v any) error {
-	if v == nil {
-		return nil
-	}
+func checkSafeJSONValue(path string, v any) error {
 	switch x := v.(type) {
+	case nil, bool, json.Number:
+		return nil
 	case string:
-		return checkSafeString(field, x)
-	case []string:
-		for i, s := range x {
-			if err := checkSafeString(fmt.Sprintf("%s[%d]", field, i), s); err != nil {
-				return err
-			}
-		}
+		return checkSafeString(path, x)
 	case []any:
 		for i, item := range x {
-			if err := checkSafeValue(fmt.Sprintf("%s[%d]", field, i), item); err != nil {
+			if err := checkSafeJSONValue(fmt.Sprintf("%s[%d]", path, i), item); err != nil {
 				return err
 			}
 		}
+		return nil
 	case map[string]any:
 		for k, item := range x {
-			if err := checkSafeString(field+".<key>", k); err != nil {
+			if err := checkSafeString(path+".<key>", k); err != nil {
 				return err
 			}
-			if err := checkSafeValue(field+"."+k, item); err != nil {
+			childPath := path + "." + k
+			if isSensitivePropertyKey(k) && hasNonEmptyJSONValue(item) {
+				return fmt.Errorf("%w: %s is a credential-like property with a non-empty value", ErrUnsafeReportContent, childPath)
+			}
+			if err := checkSafeJSONValue(childPath, item); err != nil {
 				return err
 			}
 		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %s has unsupported JSON value type %T", ErrUnsafeReportContent, path, v)
 	}
-	return nil
+}
+
+func isSensitivePropertyKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(key, "-", "_")))
+	_, ok := sensitivePropertyKeys[normalized]
+	return ok
+}
+
+func hasNonEmptyJSONValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(x) != ""
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	default:
+		return true
+	}
 }
 
 func checkSafeString(field, s string) error {

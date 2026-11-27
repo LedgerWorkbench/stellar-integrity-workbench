@@ -3,6 +3,7 @@ package reporting_test
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +11,21 @@ import (
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/evidence"
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/reporting"
 )
+
+func cloneManifestForCompare(t *testing.T, m *evidence.Manifest) *evidence.Manifest {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal clone: %v", err)
+	}
+	var out evidence.Manifest
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("decode clone: %v", err)
+	}
+	return &out
+}
 
 func TestRenderSafety_RejectsSensitiveContentInBothRenderers(t *testing.T) {
 	pass := domain.RunOutcomePass
@@ -45,6 +61,20 @@ func TestRenderSafety_RejectsSensitiveContentInBothRenderers(t *testing.T) {
 			secret: `C:\Users\bob\ledger.xdr`,
 			mutate: func(m *evidence.Manifest) {
 				m.Assertions[0].Explanation = `failed reading C:\Users\bob\ledger.xdr`
+			},
+		},
+		{
+			name:   "windows_unc_path_in_limitation",
+			secret: `\\fileserver\share\secret.txt`,
+			mutate: func(m *evidence.Manifest) {
+				m.Diagnostics.Limitations = []string{`read from \\fileserver\share\secret.txt`}
+			},
+		},
+		{
+			name:   "file_uri_local_path_in_notes",
+			secret: "file:///etc/passwd",
+			mutate: func(m *evidence.Manifest) {
+				m.Provenance.Notes = "source file:///etc/passwd"
 			},
 		},
 		{
@@ -91,13 +121,58 @@ func TestRenderSafety_RejectsSensitiveContentInBothRenderers(t *testing.T) {
 				m.Provenance.URL = &u
 			},
 		},
+		{
+			name:   "typed_map_string_string_bearer_in_expected",
+			secret: "Bearer nested_typed_secret_987654",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Expected = map[string]string{
+					"header": "Bearer nested_typed_secret_987654",
+				}
+			},
+		},
+		{
+			name:   "typed_slice_map_string_string_path_in_observed",
+			secret: "/tmp/private/observed.xdr",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = []map[string]string{
+					{"path": "/tmp/private/observed.xdr"},
+				}
+			},
+		},
+		{
+			name:   "generic_nested_map_and_array_in_observed",
+			secret: "secret_token_in_array_xyz",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]any{
+					"items": []any{
+						map[string]any{"note": "password=secret_token_in_array_xyz"},
+					},
+				}
+			},
+		},
+		{
+			name:   "credential_property_api_key_with_opaque_value",
+			secret: "opaque-value-1234",
+			mutate: func(m *evidence.Manifest) {
+				m.Assertions[0].Observed = map[string]string{
+					"api_key": "opaque-value-1234",
+				}
+			},
+		},
+		{
+			name:   "invalid_timestamp_containing_local_path_does_not_leak",
+			secret: "/home/alice/leak-in-timestamp",
+			mutate: func(m *evidence.Manifest) {
+				m.Run.StartedAt = "/home/alice/leak-in-timestamp"
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m := baseManifest()
 			tc.mutate(m)
-			beforeNotes := m.Provenance.Notes
+			snapshot := cloneManifestForCompare(t, m)
 
 			_, errJSON := reporting.RenderJSON(m)
 			if !errors.Is(errJSON, reporting.ErrUnsafeReportContent) {
@@ -115,9 +190,10 @@ func TestRenderSafety_RejectsSensitiveContentInBothRenderers(t *testing.T) {
 				t.Errorf("RenderMarkdown error leaked sensitive value %q: %v", tc.secret, errMD)
 			}
 
-			// Manifest must not be mutated on rejected render.
-			if m.Provenance.Notes != beforeNotes {
-				t.Error("manifest was mutated during rejected render")
+			// Full deep comparison: manifest must not be mutated during rejected render.
+			after := cloneManifestForCompare(t, m)
+			if !reflect.DeepEqual(snapshot, after) {
+				t.Errorf("manifest was mutated during rejected render")
 			}
 		})
 	}
