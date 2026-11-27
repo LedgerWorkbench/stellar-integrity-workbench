@@ -1,6 +1,6 @@
 # Core Engine Architecture (Phase 6)
 
-**Status:** Units 1–4 implemented; Units 5–9 pending
+**Status:** Units 1–5 implemented; Units 6–9 pending
 
 ## 1. Implemented Components
 
@@ -59,7 +59,27 @@
 - **Network isolation:** `ProcessRunner` does not create Linux network namespaces; production deployments must restrict outbound network access at the container/host firewall level.
 - **Process-tree termination:** `exec.CommandContext` terminates the direct child process on timeout or cancellation. Grandchildren spawned by an adapter are not guaranteed to be reaped without OS-specific process-group or cgroup supervision.
 
-## 5. Remaining Work (Units 5–9)
+## 5. Unit 5: Go Ingestion Adapter (`internal/adapter/goingest`, `cmd/go-ingest-adapter`)
 
-- **Unit 5:** Implement Stellar XDR `LedgerCloseMeta` decoding and canonical semantic projection in `go-ingest-adapter` using `github.com/stellar/go-stellar-sdk v0.9.0`.
+- **Pinned SDK:** `github.com/stellar/go-stellar-sdk v0.9.0` (resolves to tag `v0.9.0`, commit `5410d3410e212331399d1518cc13150279969dac`).
+- **Input integrity:** `goingest.LoadAndVerifyInput` rejects missing files, symlinks, directories, and non-regular files via `os.Lstat` and `f.Stat`, enforces `limits.max_input_bytes`, reads exact raw bytes without normalization, computes SHA-256, and rejects any mismatch against `input_sha256` before invoking XDR decoding.
+- **XDR decoder API:** `xdr.SafeUnmarshal(data, &lcm)` into `xdr.LedgerCloseMeta`, which rejects empty, truncated, and malformed XDR as well as trailing unconsumed bytes.
+- **Supported outer `LedgerCloseMeta` variants:** `V0` (`LedgerCloseMetaV0`), `V1` (`LedgerCloseMetaV1`), and `V2` (`LedgerCloseMetaV2`), validated structurally (including `GeneralizedTransactionSet.V == 1` and `TransactionPhase.V` `0`/`1`, plus `TxSet`/`TxProcessing` count alignment) before calling SDK accessors. Unknown or unsupported variants return structured `ErrUnsupportedXDRVariant` / `ErrXDRDecodeFailed` errors without panicking.
+- **SDK accessors & ingest helpers used:**
+  - `xdr.LedgerCloseMeta.LedgerSequence()`
+  - `xdr.LedgerCloseMeta.ProtocolVersion()`
+  - `xdr.LedgerCloseMeta.LedgerCloseTime()`
+  - `xdr.LedgerCloseMeta.LedgerHash().HexString()`
+  - `xdr.LedgerCloseMeta.PreviousLedgerHash().HexString()`
+  - `xdr.LedgerCloseMeta.CountTransactions()`
+  - `xdr.LedgerCloseMeta.TransactionHash(i).HexString()`
+  - `ingest/ledger.TransactionCounts(lcm)` (`github.com/stellar/go-stellar-sdk/ingest/ledger`)
+- **Semantic projection (`goingest.SemanticProjection`, `projection_version: "1"`):**
+  - `xdr_type`: `"LedgerCloseMeta"`, `outer_variant`: `0 | 1 | 2`.
+  - `ledger`: `sequence`, `protocol_version`, `close_time_unix`, `ledger_hash`, `previous_ledger_hash`.
+  - `transactions`: `total`, `successful`, `failed`, `hashes` (in processing order, bounded to `MaxProjectedTxHashes = 256`), and `hashes_truncated` (`true` when `total > 256`).
+- **Network passphrase limitation:** `ingest.NewLedgerTransactionReaderFromLedgerCloseMeta` requires a `networkPassphrase` argument, which is not part of Adapter Protocol v1. The Unit 5 adapter does not hardcode or infer Public/Testnet passphrases and instead uses `xdr.LedgerCloseMeta` accessors and `ingest/ledger.TransactionCounts`. Full per-transaction envelope/operation extraction via `LedgerTransactionReader` is deferred until an explicit protocol extension supplies network identity or passphrase.
+
+## 6. Remaining Work (Units 6–9)
+
 - **Units 6–9:** Assertion evaluation engine, evidence bundle generation, and full `workbench-worker` run command wiring.

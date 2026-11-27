@@ -1,15 +1,12 @@
 // Command go-ingest-adapter implements the versioned adapter process protocol
 // for decoding and inspecting Stellar ledger-close metadata using the official
-// Stellar Go SDK.
+// Stellar Go SDK (v0.9.0).
 //
 // The adapter reads one JSON request from stdin, validates it against the
-// adapter protocol v1 contract, processes the specified operation, and writes
-// exactly one JSON result to stdout. All diagnostics are written to stderr.
-//
-// In Unit 4, the adapter implements the full protocol v1 request/response
-// contract. Actual Stellar XDR decoding and semantic projection are
-// implemented in Unit 5; until then, valid decode_ledger_meta requests
-// receive a truthful non-success result with decode.status = "not_attempted".
+// adapter protocol v1 contract, verifies and decodes the staged
+// LedgerCloseMeta XDR input, builds a deterministic semantic projection, and
+// writes exactly one JSON result to stdout. All diagnostics are written to
+// stderr.
 //
 // This binary is invoked by the workbench-worker through the allowlisted
 // adapter registry. It must not be invoked with user-supplied executable
@@ -23,6 +20,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +31,7 @@ import (
 	"time"
 
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/adapter"
+	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/adapter/goingest"
 )
 
 // version is set at build time via -ldflags.
@@ -96,7 +95,8 @@ func run() int {
 }
 
 // processRequest reads a single bounded JSON request from stdin, validates it
-// against adapter protocol v1, and writes a single JSON result to stdout.
+// against adapter protocol v1, verifies and decodes the staged LedgerCloseMeta
+// input, and writes a single JSON result to stdout.
 func processRequest(ctx context.Context, logger *slog.Logger) int {
 	startTime := time.Now()
 	adapter.Init()
@@ -165,43 +165,7 @@ func processRequest(ctx context.Context, logger *slog.Logger) int {
 		return exitProtocolError
 	}
 
-	// Unit 5 implements actual Stellar XDR decoding. Until Unit 5 begins,
-	// return an explicit, truthful non-success result marking decode as
-	// not_attempted with a structured diagnostic.
-	durationMs := time.Since(startTime).Milliseconds()
-	if durationMs < 0 {
-		durationMs = 0
-	}
-
-	res := &adapter.Result{
-		SchemaVersion:  adapter.ProtocolVersion,
-		RunID:          req.RunID,
-		CaseID:         req.CaseID,
-		AdapterID:      adapterID,
-		AdapterVersion: version,
-		SDKVersion:     adapter.PinnedGoSDKVersion,
-		Execution: adapter.ResultExecution{
-			Status:     adapter.ExecutionStatusFailed,
-			ExitCode:   exitDecodeError,
-			DurationMs: durationMs,
-		},
-		Input: adapter.ResultInput{
-			SHA256: req.InputSHA256,
-		},
-		Decode: adapter.ResultDecode{
-			Status:       adapter.DecodeStatusNotAttempted,
-			DetectedType: nil,
-		},
-		SemanticProjection: nil,
-		Diagnostics: []adapter.ResultDiagnostic{
-			{
-				Stage:   "decode",
-				Code:    "decoder_not_implemented",
-				Message: "Stellar XDR decoding for decode_ledger_meta is not yet implemented; pending Unit 5",
-			},
-		},
-		CapabilitiesUsed: []string{},
-	}
+	res := executeIngest(req, startTime, logger, ctx)
 
 	outBytes, err := adapter.EncodeResult(res)
 	if err != nil {
@@ -214,12 +178,151 @@ func processRequest(ctx context.Context, logger *slog.Logger) int {
 		return exitInternalError
 	}
 
-	logger.InfoContext(ctx, "go-ingest-adapter completed protocol response (decoder pending Unit 5)",
+	logger.InfoContext(ctx, "go-ingest-adapter completed",
 		"run_id", req.RunID,
 		"case_id", req.CaseID,
-		"exit_code", exitDecodeError,
+		"execution_status", res.Execution.Status,
+		"decode_status", res.Decode.Status,
+		"exit_code", res.Execution.ExitCode,
 	)
-	return exitDecodeError
+	return res.Execution.ExitCode
+}
+
+func executeIngest(req *adapter.Request, startTime time.Time, logger *slog.Logger, ctx context.Context) *adapter.Result {
+	baseResult := func(execStatus string, exitCode int, decodeStatus string, detectedType *string, proj *json.RawMessage, diags []adapter.ResultDiagnostic, caps []string) *adapter.Result {
+		durationMs := time.Since(startTime).Milliseconds()
+		if durationMs < 0 {
+			durationMs = 0
+		}
+		if diags == nil {
+			diags = []adapter.ResultDiagnostic{}
+		}
+		if caps == nil {
+			caps = []string{}
+		}
+		return &adapter.Result{
+			SchemaVersion:  adapter.ProtocolVersion,
+			RunID:          req.RunID,
+			CaseID:         req.CaseID,
+			AdapterID:      adapterID,
+			AdapterVersion: version,
+			SDKVersion:     adapter.PinnedGoSDKVersion,
+			Execution: adapter.ResultExecution{
+				Status:     execStatus,
+				ExitCode:   exitCode,
+				DurationMs: durationMs,
+			},
+			Input: adapter.ResultInput{
+				SHA256: req.InputSHA256,
+			},
+			Decode: adapter.ResultDecode{
+				Status:       decodeStatus,
+				DetectedType: detectedType,
+			},
+			SemanticProjection: proj,
+			Diagnostics:        diags,
+			CapabilitiesUsed:   caps,
+		}
+	}
+
+	// Step 1: Load and verify local staged input before any XDR decoding.
+	loaded, err := goingest.LoadAndVerifyInput(req.InputPath, req.InputSHA256, req.Limits.MaxInputBytes)
+	if err != nil {
+		logger.ErrorContext(ctx, "input verification failed", "run_id", req.RunID, "error", err)
+		return mapIngestErrorToResult(err, adapter.DecodeStatusNotAttempted, nil, baseResult)
+	}
+
+	// Step 2: Decode LedgerCloseMeta using the official Stellar Go SDK.
+	decoded, err := goingest.DecodeLedgerCloseMeta(loaded.Data)
+	if err != nil {
+		logger.ErrorContext(ctx, "LedgerCloseMeta decode failed", "run_id", req.RunID, "error", err)
+		return mapIngestErrorToResult(err, adapter.DecodeStatusInvalidInput, nil, baseResult)
+	}
+
+	detectedType := adapter.InputFormatLedgerCloseMeta
+
+	// Step 3: Build deterministic semantic projection.
+	proj, err := goingest.BuildSemanticProjection(decoded)
+	if err != nil {
+		logger.ErrorContext(ctx, "semantic projection failed", "run_id", req.RunID, "error", err)
+		return mapIngestErrorToResult(err, adapter.DecodeStatusSuccess, &detectedType, baseResult)
+	}
+
+	projBytes, err := json.Marshal(proj)
+	if err != nil {
+		logger.ErrorContext(ctx, "failed to marshal semantic projection", "run_id", req.RunID, "error", err)
+		return baseResult(
+			adapter.ExecutionStatusFailed,
+			exitInternalError,
+			adapter.DecodeStatusSuccess,
+			&detectedType,
+			nil,
+			[]adapter.ResultDiagnostic{
+				{
+					Stage:   "projection",
+					Code:    "projection_marshal_failed",
+					Message: "failed to serialize semantic projection",
+				},
+			},
+			[]string{"decode_ledger_meta", "xdr_safe_unmarshal"},
+		)
+	}
+
+	rawProj := json.RawMessage(projBytes)
+	return baseResult(
+		adapter.ExecutionStatusCompleted,
+		exitOK,
+		adapter.DecodeStatusSuccess,
+		&detectedType,
+		&rawProj,
+		[]adapter.ResultDiagnostic{},
+		[]string{"decode_ledger_meta", "xdr_safe_unmarshal", "semantic_projection_v1"},
+	)
+}
+
+func mapIngestErrorToResult(
+	err error,
+	defaultDecodeStatus string,
+	detectedType *string,
+	build func(execStatus string, exitCode int, decodeStatus string, detectedType *string, proj *json.RawMessage, diags []adapter.ResultDiagnostic, caps []string) *adapter.Result,
+) *adapter.Result {
+	stage := "decode"
+	code := "ingest_failed"
+	var ge *goingest.Error
+	if errors.As(err, &ge) {
+		stage = ge.Stage
+		code = ge.Code
+	}
+
+	switch {
+	case errors.Is(err, goingest.ErrMissingInput):
+		return build(adapter.ExecutionStatusFailed, exitInputError, adapter.DecodeStatusNotAttempted, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "staged input file is missing"}}, nil)
+	case errors.Is(err, goingest.ErrNotRegularFile):
+		return build(adapter.ExecutionStatusFailed, exitInputError, adapter.DecodeStatusNotAttempted, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "staged input is not a regular file"}}, nil)
+	case errors.Is(err, goingest.ErrInputTooLarge):
+		return build(adapter.ExecutionStatusFailed, exitInputError, adapter.DecodeStatusNotAttempted, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "staged input exceeds max_input_bytes"}}, nil)
+	case errors.Is(err, goingest.ErrInputHashMismatch):
+		return build(adapter.ExecutionStatusFailed, exitInputError, adapter.DecodeStatusNotAttempted, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "staged input SHA-256 does not match request input_sha256"}}, nil)
+	case errors.Is(err, goingest.ErrXDRDecodeFailed):
+		return build(adapter.ExecutionStatusFailed, exitDecodeError, adapter.DecodeStatusInvalidInput, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "LedgerCloseMeta XDR decoding failed"}}, nil)
+	case errors.Is(err, goingest.ErrUnsupportedXDRVariant):
+		return build(adapter.ExecutionStatusFailed, exitDecodeError, adapter.DecodeStatusUnsupportedType, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "unsupported LedgerCloseMeta XDR variant"}}, nil)
+	case errors.Is(err, goingest.ErrUnsupportedProtocol):
+		return build(adapter.ExecutionStatusFailed, exitDecodeError, adapter.DecodeStatusUnsupportedProtocol, nil, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "unsupported Stellar protocol behaviour"}}, nil)
+	case errors.Is(err, goingest.ErrProjectionFailed):
+		return build(adapter.ExecutionStatusFailed, exitInternalError, defaultDecodeStatus, detectedType, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "failed to construct semantic projection"}}, nil)
+	default:
+		return build(adapter.ExecutionStatusFailed, exitInternalError, defaultDecodeStatus, detectedType, nil,
+			[]adapter.ResultDiagnostic{{Stage: stage, Code: code, Message: "internal adapter error"}}, nil)
+	}
 }
 
 func printUsage() {
@@ -236,7 +339,7 @@ Exit Codes:
   0  Success
   1  Usage error (invalid CLI arguments)
   2  Input error
-  3  Decode error / decoder not implemented
+  3  Decode error
   4  Protocol error (malformed or invalid request)
   5  Internal error
 
