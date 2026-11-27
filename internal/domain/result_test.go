@@ -1,6 +1,8 @@
 package domain_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/LedgerWorkbench/stellar-integrity-workbench/internal/domain"
@@ -102,4 +104,76 @@ func TestDeriveOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSemanticProjection_TransactionHashesJSONRoundTrip(t *testing.T) {
+	t.Run("nil_slice_preserved_as_null", func(t *testing.T) {
+		orig := domain.SemanticProjection{
+			DecodedType:       "LedgerCloseMeta",
+			TransactionHashes: nil,
+		}
+		data, err := json.Marshal(orig)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+		if !strings.Contains(string(data), `"transaction_hashes":null`) {
+			t.Errorf("expected null transaction_hashes in JSON, got %s", string(data))
+		}
+
+		var restored domain.SemanticProjection
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		if restored.TransactionHashes != nil {
+			t.Errorf("expected nil TransactionHashes after round-trip, got %#v", restored.TransactionHashes)
+		}
+	})
+
+	t.Run("non_nil_empty_slice_preserved_as_empty_array", func(t *testing.T) {
+		orig := domain.SemanticProjection{
+			DecodedType:       "LedgerCloseMeta",
+			TransactionHashes: []string{},
+		}
+		data, err := json.Marshal(orig)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+		if !strings.Contains(string(data), `"transaction_hashes":[]`) {
+			t.Errorf("expected [] transaction_hashes in JSON, got %s", string(data))
+		}
+
+		var restored domain.SemanticProjection
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		if restored.TransactionHashes == nil {
+			t.Fatal("expected non-nil empty TransactionHashes after round-trip, got nil")
+		}
+		if len(restored.TransactionHashes) != 0 {
+			t.Errorf("expected 0 hashes, got %d", len(restored.TransactionHashes))
+		}
+	})
+
+	t.Run("populated_and_truncated_preserved", func(t *testing.T) {
+		orig := domain.SemanticProjection{
+			DecodedType:                "LedgerCloseMeta",
+			TransactionHashes:          []string{"aaaa", "bbbb"},
+			TransactionHashesTruncated: true,
+		}
+		data, err := json.Marshal(orig)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+
+		var restored domain.SemanticProjection
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		if len(restored.TransactionHashes) != 2 || restored.TransactionHashes[0] != "aaaa" || restored.TransactionHashes[1] != "bbbb" {
+			t.Errorf("restored TransactionHashes = %#v, want [aaaa bbbb]", restored.TransactionHashes)
+		}
+		if !restored.TransactionHashesTruncated {
+			t.Error("expected TransactionHashesTruncated = true after round-trip")
+		}
+	})
 }

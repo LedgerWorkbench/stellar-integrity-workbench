@@ -23,9 +23,11 @@ The engine evaluates exactly five typed assertion kinds (no generic expression l
 | `xdr_type` | `DecodedType` |
 | `ledger.sequence` | `LedgerSequence` |
 | `transactions.total` | `TransactionCount` |
-| `transactions.hashes` | `TransactionHashes` (`nil` = unavailable; `[]string{}` = complete empty list) |
+| `transactions.hashes` | `TransactionHashes` (`nil` = unavailable / JSON `null`; `[]string{}` = complete empty list / JSON `[]`) |
 | `transactions.hashes_truncated` | `TransactionHashesTruncated` |
 | Trusted verified input SHA-256 (e.g. `localfile.VerifiedInput.SHA256`) | `EvaluationInput.VerifiedInputSHA256` |
+
+`domain.SemanticProjection.TransactionHashes` intentionally omits `omitempty` so that `nil` (unavailable) and non-nil empty `[]string{}` (a complete list containing zero hashes) remain distinct across JSON marshaling and unmarshaling (`null` vs `[]`). `ProjectionFromGoIngest` also validates that non-truncated Unit 5 projections have `len(Hashes) == Total` and truncated projections have `len(Hashes) < Total`.
 
 ## 3. Result Statuses
 

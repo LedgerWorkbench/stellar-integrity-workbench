@@ -55,11 +55,20 @@ func ProjectionFromGoIngest(p *goingest.SemanticProjection) (*domain.SemanticPro
 	txCount := int(p.Transactions.Total)
 	proto := int(p.Ledger.ProtocolVersion)
 
-	var hashes []string
-	if p.Transactions.Hashes != nil {
-		hashes = make([]string, len(p.Transactions.Hashes))
-		copy(hashes, p.Transactions.Hashes)
+	if p.Transactions.HashesTruncated {
+		if int64(len(p.Transactions.Hashes)) >= int64(p.Transactions.Total) {
+			return nil, fmt.Errorf("inconsistent Unit 5 projection: hashes_truncated is true but hash count %d >= total %d",
+				len(p.Transactions.Hashes), p.Transactions.Total)
+		}
+	} else {
+		if int64(len(p.Transactions.Hashes)) != int64(p.Transactions.Total) {
+			return nil, fmt.Errorf("inconsistent Unit 5 projection: hashes_truncated is false but hash count %d != total %d",
+				len(p.Transactions.Hashes), p.Transactions.Total)
+		}
 	}
+
+	hashes := make([]string, len(p.Transactions.Hashes))
+	copy(hashes, p.Transactions.Hashes)
 
 	return &domain.SemanticProjection{
 		DecodedType:                p.XDRType,

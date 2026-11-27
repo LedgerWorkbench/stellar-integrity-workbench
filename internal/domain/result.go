@@ -13,7 +13,7 @@ type SemanticProjection struct {
 	DecodedType                string   `json:"decoded_type"`
 	LedgerSequence             *int64   `json:"ledger_sequence,omitempty"`
 	TransactionCount           *int     `json:"transaction_count,omitempty"`
-	TransactionHashes          []string `json:"transaction_hashes,omitempty"`
+	TransactionHashes          []string `json:"transaction_hashes"`
 	TransactionHashesTruncated bool     `json:"transaction_hashes_truncated,omitempty"`
 	ProtocolVersion            *int     `json:"protocol_version,omitempty"`
 }

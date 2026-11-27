@@ -468,4 +468,125 @@ func TestProjectionFromGoIngest(t *testing.T) {
 	if len(dp.TransactionHashes) != 1 || dp.TransactionHashes[0] != sampleHash1 {
 		t.Errorf("TransactionHashes = %v, want [%s]", dp.TransactionHashes, sampleHash1)
 	}
+
+	t.Run("zero_transactions_non_nil_empty_slice", func(t *testing.T) {
+		zero := &goingest.SemanticProjection{
+			XDRType: "LedgerCloseMeta",
+			Transactions: goingest.TransactionsProjection{
+				Total:           0,
+				Hashes:          nil,
+				HashesTruncated: false,
+			},
+		}
+		got, err := ProjectionFromGoIngest(zero)
+		if err != nil {
+			t.Fatalf("ProjectionFromGoIngest failed: %v", err)
+		}
+		if got.TransactionHashes == nil || len(got.TransactionHashes) != 0 {
+			t.Errorf("expected non-nil empty TransactionHashes, got %#v", got.TransactionHashes)
+		}
+	})
+
+	t.Run("inconsistent_non_truncated_count_rejected", func(t *testing.T) {
+		bad := &goingest.SemanticProjection{
+			XDRType: "LedgerCloseMeta",
+			Transactions: goingest.TransactionsProjection{
+				Total:           2,
+				Hashes:          []string{sampleHash1},
+				HashesTruncated: false,
+			},
+		}
+		if _, err := ProjectionFromGoIngest(bad); err == nil {
+			t.Fatal("expected error for non-truncated projection with len(Hashes) != Total")
+		}
+	})
+
+	t.Run("inconsistent_truncated_count_rejected", func(t *testing.T) {
+		bad := &goingest.SemanticProjection{
+			XDRType: "LedgerCloseMeta",
+			Transactions: goingest.TransactionsProjection{
+				Total:           1,
+				Hashes:          []string{sampleHash1},
+				HashesTruncated: true,
+			},
+		}
+		if _, err := ProjectionFromGoIngest(bad); err == nil {
+			t.Fatal("expected error for truncated projection with len(Hashes) >= Total")
+		}
+	})
+}
+
+func TestEvaluate_TransactionHashesJSONRoundTrip(t *testing.T) {
+	exp := []domain.AssertionExpectation{
+		{AssertionID: "a_tx", Kind: domain.AssertionKindTransactionHashPresent, Expected: sampleHash1},
+	}
+
+	roundTrip := func(t *testing.T, p *domain.SemanticProjection) *domain.SemanticProjection {
+		t.Helper()
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var out domain.SemanticProjection
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		return &out
+	}
+
+	t.Run("nil_hash_list_after_json_yields_inconclusive", func(t *testing.T) {
+		restored := roundTrip(t, makeProjection(10, 0, nil, false, "LedgerCloseMeta"))
+		eval, err := Evaluate(exp, EvaluationInput{
+			Projection:     restored,
+			SupportedKinds: GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate failed: %v", err)
+		}
+		if eval.Results[0].Status != domain.AssertionStatusInconclusive {
+			t.Errorf("Status = %q, want %q", eval.Results[0].Status, domain.AssertionStatusInconclusive)
+		}
+	})
+
+	t.Run("complete_empty_hash_list_after_json_yields_fail", func(t *testing.T) {
+		restored := roundTrip(t, makeProjection(10, 0, []string{}, false, "LedgerCloseMeta"))
+		eval, err := Evaluate(exp, EvaluationInput{
+			Projection:     restored,
+			SupportedKinds: GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate failed: %v", err)
+		}
+		if eval.Results[0].Status != domain.AssertionStatusFail {
+			t.Errorf("Status = %q, want %q", eval.Results[0].Status, domain.AssertionStatusFail)
+		}
+	})
+
+	t.Run("populated_hash_list_after_json_passes", func(t *testing.T) {
+		restored := roundTrip(t, makeProjection(10, 1, []string{sampleHash1}, false, "LedgerCloseMeta"))
+		eval, err := Evaluate(exp, EvaluationInput{
+			Projection:     restored,
+			SupportedKinds: GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate failed: %v", err)
+		}
+		if eval.Results[0].Status != domain.AssertionStatusPass {
+			t.Errorf("Status = %q, want %q", eval.Results[0].Status, domain.AssertionStatusPass)
+		}
+	})
+
+	t.Run("truncated_absent_after_json_yields_inconclusive", func(t *testing.T) {
+		restored := roundTrip(t, makeProjection(10, 300, []string{sampleHash2}, true, "LedgerCloseMeta"))
+		eval, err := Evaluate(exp, EvaluationInput{
+			Projection:     restored,
+			SupportedKinds: GoIngestSupportedKinds(),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate failed: %v", err)
+		}
+		if eval.Results[0].Status != domain.AssertionStatusInconclusive {
+			t.Errorf("Status = %q, want %q", eval.Results[0].Status, domain.AssertionStatusInconclusive)
+		}
+	})
 }
